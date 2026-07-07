@@ -189,6 +189,12 @@ const IPC = {
   OSS_BROWSER_HEAD: "oss-browser:head",
   OSS_BROWSER_GET_IMAGE: "oss-browser:get-image",
   OSS_BROWSER_OPEN_PREVIEW_WINDOW: "oss-browser:open-preview-window",
+  // 通用转换工具
+  GENERIC_CONVERTER_STATUS: "generic-converter:status",
+  GENERIC_CONVERTER_START: "generic-converter:start",
+  GENERIC_CONVERTER_STOP: "generic-converter:stop",
+  GENERIC_CONVERTER_SCAN_NOW: "generic-converter:scan-now",
+  GENERIC_CONVERTER_EVENT: "generic-converter:event",
   // SSH / rsync
   SSH_LIST_MACHINES: "ssh:list-machines",
   SSH_ADD_MACHINE: "ssh:add-machine",
@@ -1316,10 +1322,10 @@ class TaskDestinationRepo {
     for (const row of fileRows) this.recalculateLogicalFile(row.id);
   }
 }
-let instance$m = null;
+let instance$n = null;
 function getTaskDestinationRepo() {
-  if (!instance$m) instance$m = new TaskDestinationRepo();
-  return instance$m;
+  if (!instance$n) instance$n = new TaskDestinationRepo();
+  return instance$n;
 }
 function normalizeFolderPath$1(p) {
   return path.normalize(p).replace(/[\\/]+$/, "");
@@ -2303,10 +2309,135 @@ class TaskRepo {
     return this.rowsToTasks(rows);
   }
 }
-let instance$l = null;
+let instance$m = null;
 function getTaskRepo() {
-  if (!instance$l) instance$l = new TaskRepo();
-  return instance$l;
+  if (!instance$m) instance$m = new TaskRepo();
+  return instance$m;
+}
+const GENERIC_CONVERTER_EXTENSION_ID = "generic-converter";
+const DEFAULT_GENERIC_CONVERTER_CONFIG = {
+  enabled: false,
+  pythonPath: "python3",
+  monitorScriptPath: "",
+  converterScriptPath: "",
+  dataRoot: "",
+  outputRoot: "",
+  deviceCode: "G26",
+  stableSeconds: 300,
+  pollIntervalSeconds: 30,
+  retryFailed: false,
+  env: {},
+  extraArgs: [],
+  outputDirectoryTemplate: "{outputRoot}/{date}",
+  outputBatchNameTemplate: "{deviceCode}_{startTs}_{endTs}",
+  outputFileNameTemplate: "{batchName}.mcap",
+  outputBatchNamePattern: "^[^/]+_\\d{17}Z8_\\d{17}Z8$"
+};
+function isRecord$2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function normalizeString(value, fallback = "") {
+  return typeof value === "string" ? value.trim() : fallback;
+}
+function normalizeNumber(value, fallback, min, max) {
+  const num = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.max(min, Math.min(max, num));
+}
+function normalizeStringArray$1(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item).trim()).filter(Boolean);
+}
+function normalizeEnv(value) {
+  if (!isRecord$2(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).map(([key, envValue]) => [key.trim(), String(envValue)]).filter(([key]) => key.length > 0)
+  );
+}
+function validRegex(value) {
+  try {
+    new RegExp(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function normalizeGenericConverterConfig(rawConfig) {
+  const raw = isRecord$2(rawConfig) ? rawConfig : {};
+  const fallback = DEFAULT_GENERIC_CONVERTER_CONFIG;
+  const outputBatchNamePattern = normalizeString(
+    raw.outputBatchNamePattern,
+    fallback.outputBatchNamePattern
+  );
+  return {
+    enabled: raw.enabled === true,
+    pythonPath: normalizeString(raw.pythonPath, fallback.pythonPath) || fallback.pythonPath,
+    monitorScriptPath: normalizeString(raw.monitorScriptPath),
+    converterScriptPath: normalizeString(raw.converterScriptPath),
+    dataRoot: normalizeString(raw.dataRoot),
+    outputRoot: normalizeString(raw.outputRoot),
+    deviceCode: normalizeString(raw.deviceCode, fallback.deviceCode) || fallback.deviceCode,
+    stableSeconds: normalizeNumber(raw.stableSeconds, fallback.stableSeconds, 0, 86400),
+    pollIntervalSeconds: normalizeNumber(
+      raw.pollIntervalSeconds,
+      fallback.pollIntervalSeconds,
+      1,
+      86400
+    ),
+    retryFailed: raw.retryFailed === true,
+    env: normalizeEnv(raw.env),
+    extraArgs: normalizeStringArray$1(raw.extraArgs),
+    outputDirectoryTemplate: normalizeString(
+      raw.outputDirectoryTemplate,
+      fallback.outputDirectoryTemplate
+    ) || fallback.outputDirectoryTemplate,
+    outputBatchNameTemplate: normalizeString(
+      raw.outputBatchNameTemplate,
+      fallback.outputBatchNameTemplate
+    ) || fallback.outputBatchNameTemplate,
+    outputFileNameTemplate: normalizeString(
+      raw.outputFileNameTemplate,
+      fallback.outputFileNameTemplate
+    ) || fallback.outputFileNameTemplate,
+    outputBatchNamePattern: validRegex(outputBatchNamePattern) ? outputBatchNamePattern : fallback.outputBatchNamePattern
+  };
+}
+function genericConverterConfigFromExtensions(extensions) {
+  return normalizeGenericConverterConfig(
+    extensions?.configs?.[GENERIC_CONVERTER_EXTENSION_ID]
+  );
+}
+function mergeWorkDirNamePattern(currentPattern, outputBatchNamePattern) {
+  const current = currentPattern?.trim();
+  const output = outputBatchNamePattern.trim();
+  if (!output) return current || "";
+  if (!current) return output;
+  if (current === output || current.includes(output)) return current;
+  return `(?:${current})|(?:${output})`;
+}
+function applyGenericConverterScanHandoff(profile, config) {
+  if (!config.enabled || !config.outputRoot) return profile;
+  const providers = providersForMode(profile.targetMode);
+  const providerDirectories = {
+    aliyun: [...profile.scan.providerDirectories.aliyun || []],
+    tencent: [...profile.scan.providerDirectories.tencent || []]
+  };
+  for (const provider of providers) {
+    if (!providerDirectories[provider].includes(config.outputRoot)) {
+      providerDirectories[provider].push(config.outputRoot);
+    }
+  }
+  return {
+    ...profile,
+    scan: {
+      ...profile.scan,
+      providerDirectories,
+      workDirNamePattern: mergeWorkDirNamePattern(
+        profile.scan.workDirNamePattern,
+        config.outputBatchNamePattern
+      )
+    }
+  };
 }
 const UPLOAD_PIPELINE_IDS = {
   STANDARD_UPLOAD: "standard-upload",
@@ -2314,12 +2445,14 @@ const UPLOAD_PIPELINE_IDS = {
 };
 const EXTENSION_IDS = {
   WEBHOOK_NOTIFIER: "webhook-notifier",
-  OSS_BROWSER: "oss-browser"
+  OSS_BROWSER: "oss-browser",
+  GENERIC_CONVERTER: "generic-converter"
 };
 const PLUGIN_IDS = {
   MODULE1_PREUPLOAD: "module1-preupload",
   WEBHOOK_NOTIFIER: EXTENSION_IDS.WEBHOOK_NOTIFIER,
-  OSS_BROWSER: EXTENSION_IDS.OSS_BROWSER
+  OSS_BROWSER: EXTENSION_IDS.OSS_BROWSER,
+  GENERIC_CONVERTER: EXTENSION_IDS.GENERIC_CONVERTER
 };
 const BUILTIN_UPLOAD_PIPELINES = [
   {
@@ -2351,6 +2484,13 @@ const BUILTIN_EXTENSIONS = [
     version: "1.0.0",
     category: "tool",
     description: "使用当前 Profile 的阿里云 OSS 配置只读浏览对象并预览图片。"
+  },
+  {
+    id: EXTENSION_IDS.GENERIC_CONVERTER,
+    name: "通用转换工具",
+    version: "1.0.0",
+    category: "tool",
+    description: "按 Profile 启动外部监控转换脚本，转换产物继续由现有上传配置处理。"
   }
 ];
 const DEFAULT_PROFILE_UPLOAD_PIPELINE = {
@@ -2367,6 +2507,9 @@ const DEFAULT_PROFILE_EXTENSIONS = {
     },
     [EXTENSION_IDS.OSS_BROWSER]: {
       enabled: false
+    },
+    [EXTENSION_IDS.GENERIC_CONVERTER]: {
+      ...DEFAULT_GENERIC_CONVERTER_CONFIG
     }
   }
 };
@@ -2375,7 +2518,8 @@ const DEFAULT_PROFILE_PLUGINS = {
   order: [
     PLUGIN_IDS.MODULE1_PREUPLOAD,
     PLUGIN_IDS.WEBHOOK_NOTIFIER,
-    PLUGIN_IDS.OSS_BROWSER
+    PLUGIN_IDS.OSS_BROWSER,
+    PLUGIN_IDS.GENERIC_CONVERTER
   ],
   configs: {
     [PLUGIN_IDS.MODULE1_PREUPLOAD]: {
@@ -2388,6 +2532,9 @@ const DEFAULT_PROFILE_PLUGINS = {
     },
     [PLUGIN_IDS.OSS_BROWSER]: {
       enabled: false
+    },
+    [PLUGIN_IDS.GENERIC_CONVERTER]: {
+      ...DEFAULT_GENERIC_CONVERTER_CONFIG
     }
   }
 };
@@ -2837,7 +2984,17 @@ function normalizeProfile(rawProfile, fallback) {
   const rawProviders = isRecord$1(raw.providers) ? raw.providers : {};
   const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : fallback.id;
   const name = typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : fallback.name;
-  return {
+  const uploadPipeline = normalizeProfileUploadPipeline(
+    raw.uploadPipeline,
+    raw.plugins,
+    fallback.uploadPipeline
+  );
+  const extensions = normalizeProfileExtensions(
+    raw.extensions,
+    raw.plugins,
+    fallback.extensions
+  );
+  const profile = {
     id,
     name,
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : true,
@@ -2859,17 +3016,14 @@ function normalizeProfile(rawProfile, fallback) {
         fallback.providers.tencent
       )
     },
-    uploadPipeline: normalizeProfileUploadPipeline(
-      raw.uploadPipeline,
-      raw.plugins,
-      fallback.uploadPipeline
-    ),
-    extensions: normalizeProfileExtensions(
-      raw.extensions,
-      raw.plugins,
-      fallback.extensions
-    )
+    uploadPipeline,
+    extensions
   };
+  const converterEnabled = extensions.enabledIds.includes(EXTENSION_IDS.GENERIC_CONVERTER);
+  const converterConfig = normalizeGenericConverterConfig(
+    extensions.configs[EXTENSION_IDS.GENERIC_CONVERTER]
+  );
+  return converterEnabled ? applyGenericConverterScanHandoff(profile, converterConfig) : profile;
 }
 function normalizeProfileUploadPipeline(rawUploadPipeline, legacyPlugins, fallback = DEFAULT_PROFILE_UPLOAD_PIPELINE) {
   const raw = isRecord$1(rawUploadPipeline) ? rawUploadPipeline : {};
@@ -3261,10 +3415,10 @@ class SettingsRepo {
     transaction();
   }
 }
-let instance$k = null;
+let instance$l = null;
 function getSettingsRepo() {
-  if (!instance$k) instance$k = new SettingsRepo();
-  return instance$k;
+  if (!instance$l) instance$l = new SettingsRepo();
+  return instance$l;
 }
 function rowToHistory(row) {
   return {
@@ -3363,10 +3517,10 @@ class HistoryRepo {
     transaction();
   }
 }
-let instance$j = null;
+let instance$k = null;
 function getHistoryRepo() {
-  if (!instance$j) instance$j = new HistoryRepo();
-  return instance$j;
+  if (!instance$k) instance$k = new HistoryRepo();
+  return instance$k;
 }
 function normalizeFolderPath(p) {
   return path.normalize(p).replace(/[\\/]+$/, "");
@@ -3642,10 +3796,10 @@ class DayFolderRepo {
     return summary;
   }
 }
-let instance$i = null;
+let instance$j = null;
 function getDayFolderRepo() {
-  if (!instance$i) instance$i = new DayFolderRepo();
-  return instance$i;
+  if (!instance$j) instance$j = new DayFolderRepo();
+  return instance$j;
 }
 const MAX_ITEMS = 100;
 class DataCollectService {
@@ -3919,10 +4073,10 @@ function walkDirStats(dirPath) {
   walk(dirPath);
   return { fileCount, totalSize };
 }
-let instance$h = null;
+let instance$i = null;
 function getDataCollectService() {
-  if (!instance$h) instance$h = new DataCollectService();
-  return instance$h;
+  if (!instance$i) instance$i = new DataCollectService();
+  return instance$i;
 }
 function readTmpUpload(folderPath) {
   const filePath = path.join(folderPath, MARKER_FILES.TMP_UPLOAD);
@@ -4016,10 +4170,10 @@ class DayFolderService {
     }
   }
 }
-let instance$g = null;
+let instance$h = null;
 function getDayFolderService() {
-  if (!instance$g) instance$g = new DayFolderService();
-  return instance$g;
+  if (!instance$h) instance$h = new DayFolderService();
+  return instance$h;
 }
 function parseJsonRecord(value) {
   if (typeof value !== "string" || !value) return null;
@@ -4115,10 +4269,10 @@ class PluginRunRepo {
     }));
   }
 }
-let instance$f = null;
+let instance$g = null;
 function getPluginRunRepo() {
-  if (!instance$f) instance$f = new PluginRunRepo();
-  return instance$f;
+  if (!instance$g) instance$g = new PluginRunRepo();
+  return instance$g;
 }
 class CleanupService {
   timer = null;
@@ -4221,10 +4375,10 @@ class CleanupService {
     return Math.max(0, Math.floor(config.retentionDays));
   }
 }
-let instance$e = null;
+let instance$f = null;
 function getCleanupService() {
-  if (!instance$e) instance$e = new CleanupService();
-  return instance$e;
+  if (!instance$f) instance$f = new CleanupService();
+  return instance$f;
 }
 class TaskQueueService extends events.EventEmitter {
   runningTasks = /* @__PURE__ */ new Map();
@@ -4501,10 +4655,10 @@ class TaskQueueService extends events.EventEmitter {
     return previousStart;
   }
 }
-let instance$d = null;
+let instance$e = null;
 function getTaskQueueService() {
-  if (!instance$d) instance$d = new TaskQueueService();
-  return instance$d;
+  if (!instance$e) instance$e = new TaskQueueService();
+  return instance$e;
 }
 const MARKER_FILE_NAMES = /* @__PURE__ */ new Set([
   "tmp_upload.json",
@@ -5493,10 +5647,10 @@ class ScannerService {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 }
-let instance$c = null;
+let instance$d = null;
 function getScannerService() {
-  if (!instance$c) instance$c = new ScannerService();
-  return instance$c;
+  if (!instance$d) instance$d = new ScannerService();
+  return instance$d;
 }
 class OSSUploadService {
   client = null;
@@ -5681,10 +5835,10 @@ class OSSUploadService {
     }
   }
 }
-let instance$b = null;
+let instance$c = null;
 function getOSSUploadService() {
-  if (!instance$b) instance$b = new OSSUploadService();
-  return instance$b;
+  if (!instance$c) instance$c = new OSSUploadService();
+  return instance$c;
 }
 class TencentS3UploadService {
   createTaskUploader(config, multipartThreshold = 100 * 1024 * 1024) {
@@ -5849,10 +6003,10 @@ class TencentS3UploadService {
     ].filter(Boolean).join(", ") || String(err);
   }
 }
-let instance$a = null;
+let instance$b = null;
 function getTencentS3UploadService() {
-  if (!instance$a) instance$a = new TencentS3UploadService();
-  return instance$a;
+  if (!instance$b) instance$b = new TencentS3UploadService();
+  return instance$b;
 }
 class CloudUploadService {
   async createTaskUploader(provider, settings, multipartThreshold) {
@@ -5876,10 +6030,10 @@ class CloudUploadService {
     return error ? `腾讯云 ${error}` : null;
   }
 }
-let instance$9 = null;
+let instance$a = null;
 function getCloudUploadService() {
-  if (!instance$9) instance$9 = new CloudUploadService();
-  return instance$9;
+  if (!instance$a) instance$a = new CloudUploadService();
+  return instance$a;
 }
 class SSHRsyncService {
   runningProcesses = /* @__PURE__ */ new Map();
@@ -6205,10 +6359,10 @@ class SSHRsyncService {
     return null;
   }
 }
-let instance$8 = null;
+let instance$9 = null;
 function getSSHRsyncService() {
-  if (!instance$8) instance$8 = new SSHRsyncService();
-  return instance$8;
+  if (!instance$9) instance$9 = new SSHRsyncService();
+  return instance$9;
 }
 const IMAGE_EXTENSIONS = /* @__PURE__ */ new Set([".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif"]);
 const DEFAULT_MAX_KEYS = 200;
@@ -6350,12 +6504,12 @@ class OSSBrowserService {
     };
   }
 }
-let instance$7 = null;
+let instance$8 = null;
 function getOSSBrowserService() {
-  if (!instance$7) {
-    instance$7 = new OSSBrowserService();
+  if (!instance$8) {
+    instance$8 = new OSSBrowserService();
   }
-  return instance$7;
+  return instance$8;
 }
 class WebhookService {
   async notify(config, payload) {
@@ -6387,10 +6541,10 @@ class WebhookService {
     log.error(`Webhook 通知最终失败: ${config.url}`);
   }
 }
-let instance$6 = null;
+let instance$7 = null;
 function getWebhookService() {
-  if (!instance$6) instance$6 = new WebhookService();
-  return instance$6;
+  if (!instance$7) instance$7 = new WebhookService();
+  return instance$7;
 }
 function isRecord(value) {
   return typeof value === "object" && value !== null;
@@ -6421,6 +6575,13 @@ function summarizeExtensionConfig(extension, rawConfig) {
   }
   if (extension.id === EXTENSION_IDS.OSS_BROWSER) {
     return "使用当前 Profile 的阿里云 OSS 配置";
+  }
+  if (extension.id === EXTENSION_IDS.GENERIC_CONVERTER) {
+    const config = normalizeGenericConverterConfig(rawConfig);
+    if (!config.enabled) return "未启用";
+    const dataRoot = config.dataRoot || "-";
+    const outputRoot = config.outputRoot || "-";
+    return `输入=${dataRoot}; 输出=${outputRoot}`;
   }
   return "";
 }
@@ -6523,9 +6684,284 @@ class ExtensionRuntimeService {
     return runs.find((run) => run.pluginId === pluginId) || null;
   }
 }
-let instance$5 = null;
+let instance$6 = null;
 function getExtensionRuntimeService() {
-  if (!instance$5) instance$5 = new ExtensionRuntimeService();
+  if (!instance$6) instance$6 = new ExtensionRuntimeService();
+  return instance$6;
+}
+const MAX_LOG_LINES = 80;
+function configSignature(config) {
+  return JSON.stringify(config);
+}
+function createRuntime(profileId, profileName, signature) {
+  return {
+    profileId,
+    profileName,
+    signature,
+    child: null,
+    pid: null,
+    startedAt: null,
+    stoppedAt: null,
+    exitCode: null,
+    lastError: null,
+    recentLogs: [],
+    stopping: false
+  };
+}
+class GenericConverterService extends events.EventEmitter {
+  runtimes = /* @__PURE__ */ new Map();
+  syncWithSettings() {
+    const targets = this.listTargets();
+    const targetIds = new Set(targets.map((target) => target.profile.id));
+    for (const profileId of Array.from(this.runtimes.keys())) {
+      if (!targetIds.has(profileId)) {
+        this.stopProfile(profileId);
+        this.runtimes.delete(profileId);
+      }
+    }
+    for (const target of targets) {
+      const signature = configSignature(target.config);
+      const runtime = this.ensureRuntime(target.profile, signature);
+      const previousSignature = runtime.signature;
+      runtime.profileName = target.profile.name;
+      if (!target.enabled || !target.configured) {
+        runtime.signature = signature;
+        this.stopProfile(target.profile.id);
+        continue;
+      }
+      if (runtime.child && previousSignature === signature) continue;
+      if (runtime.child && previousSignature !== signature) {
+        this.stopProfile(target.profile.id);
+      }
+      runtime.signature = signature;
+      this.startTarget(target, false);
+    }
+    return this.emitStatus();
+  }
+  getStatus() {
+    const targets = this.listTargets();
+    const profiles = targets.map((target) => this.statusForTarget(target));
+    return { profiles };
+  }
+  startProfile(profileId) {
+    const target = this.findTarget(profileId);
+    if (!target) throw new Error("Profile 不存在");
+    if (!target.extensionEnabled || !target.config.enabled) {
+      throw new Error("通用转换工具未启用");
+    }
+    if (!target.configured) {
+      throw new Error("通用转换工具配置不完整");
+    }
+    this.startTarget(target, false);
+    return this.emitStatus();
+  }
+  stopProfile(profileId) {
+    const runtime = this.runtimes.get(profileId);
+    if (!runtime?.child) return this.emitStatus();
+    runtime.stopping = true;
+    this.appendLog(runtime, "[app] stopping converter monitor");
+    this.terminateChild(runtime.child);
+    runtime.child = null;
+    runtime.pid = null;
+    runtime.stoppedAt = (/* @__PURE__ */ new Date()).toISOString();
+    return this.emitStatus();
+  }
+  scanNow(profileId) {
+    const target = this.findTarget(profileId);
+    if (!target) throw new Error("Profile 不存在");
+    if (!target.extensionEnabled || !target.config.enabled) {
+      throw new Error("通用转换工具未启用");
+    }
+    if (!target.configured) {
+      throw new Error("通用转换工具配置不完整");
+    }
+    const runtime = this.ensureRuntime(target.profile, configSignature(target.config));
+    if (runtime.child) {
+      this.appendLog(runtime, "[app] monitor is already running; skip parallel scan-now");
+      return this.emitStatus();
+    }
+    this.startTarget(target, true);
+    return this.emitStatus();
+  }
+  stopAll() {
+    for (const profileId of Array.from(this.runtimes.keys())) {
+      this.stopProfile(profileId);
+    }
+  }
+  listTargets() {
+    const settings = getSettingsRepo().getAll();
+    return settings.profiles.map((profile) => {
+      const extensions = profile.extensions;
+      const extensionEnabled = Boolean(
+        extensions?.enabledIds?.includes(EXTENSION_IDS.GENERIC_CONVERTER)
+      );
+      const config = genericConverterConfigFromExtensions(extensions);
+      const enabled = profile.enabled && extensionEnabled && config.enabled;
+      const configured = Boolean(
+        config.monitorScriptPath && config.dataRoot && config.outputRoot
+      );
+      return {
+        profile,
+        config,
+        extensionEnabled,
+        enabled,
+        configured
+      };
+    });
+  }
+  findTarget(profileId) {
+    return this.listTargets().find((target) => target.profile.id === profileId) || null;
+  }
+  ensureRuntime(profile, signature) {
+    const existing = this.runtimes.get(profile.id);
+    if (existing) return existing;
+    const runtime = createRuntime(profile.id, profile.name, signature);
+    this.runtimes.set(profile.id, runtime);
+    return runtime;
+  }
+  startTarget(target, once) {
+    const runtime = this.ensureRuntime(
+      target.profile,
+      configSignature(target.config)
+    );
+    if (runtime.child) return;
+    const command = this.buildCommand(target.config, once);
+    runtime.startedAt = (/* @__PURE__ */ new Date()).toISOString();
+    runtime.stoppedAt = null;
+    runtime.exitCode = null;
+    runtime.lastError = null;
+    runtime.stopping = false;
+    this.appendLog(runtime, `[app] starting ${command.command} ${command.args.join(" ")}`);
+    const child = child_process.spawn(command.command, command.args, {
+      cwd: path.dirname(target.config.monitorScriptPath),
+      env: command.env,
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    runtime.child = child;
+    runtime.pid = child.pid ?? null;
+    child.stdout.on("data", (chunk) => {
+      if (runtime.child !== child) return;
+      this.appendLog(runtime, String(chunk));
+      if (String(chunk).includes("[monitor] converted")) {
+        getScannerService().triggerScan();
+      }
+      this.emitStatus();
+    });
+    child.stderr.on("data", (chunk) => {
+      if (runtime.child !== child) return;
+      this.appendLog(runtime, String(chunk));
+      this.emitStatus();
+    });
+    child.on("error", (error) => {
+      if (runtime.child !== child) return;
+      runtime.lastError = error.message;
+      this.appendLog(runtime, `[error] ${error.message}`);
+      log.error("通用转换工具启动失败:", error);
+      this.emitStatus();
+    });
+    child.on("exit", (code, signal) => {
+      if (runtime.child !== child) return;
+      runtime.child = null;
+      runtime.pid = null;
+      runtime.exitCode = code;
+      runtime.stoppedAt = (/* @__PURE__ */ new Date()).toISOString();
+      if (!runtime.stopping && code !== 0) {
+        runtime.lastError = signal ? `进程被信号 ${signal} 结束` : `进程退出码 ${code}`;
+      }
+      this.appendLog(runtime, `[app] exited code=${code ?? "-"} signal=${signal ?? "-"}`);
+      this.emitStatus();
+    });
+  }
+  buildCommand(rawConfig, once) {
+    const config = normalizeGenericConverterConfig(rawConfig);
+    const args = [
+      config.monitorScriptPath,
+      "--data-root",
+      config.dataRoot,
+      "--output-root",
+      config.outputRoot,
+      "--device-code",
+      config.deviceCode,
+      "--stable-seconds",
+      String(config.stableSeconds),
+      "--poll-interval",
+      String(config.pollIntervalSeconds)
+    ];
+    if (config.retryFailed) args.push("--retry-failed");
+    if (once) args.push("--once");
+    args.push(...config.extraArgs.map((arg) => this.expandTemplate(arg, config)));
+    const env = {
+      ...process.env,
+      ...config.env,
+      GENERIC_CONVERTER_SCRIPT_PATH: config.converterScriptPath,
+      GENERIC_CONVERTER_OUTPUT_DIRECTORY_TEMPLATE: config.outputDirectoryTemplate,
+      GENERIC_CONVERTER_OUTPUT_BATCH_NAME_TEMPLATE: config.outputBatchNameTemplate,
+      GENERIC_CONVERTER_OUTPUT_FILE_NAME_TEMPLATE: config.outputFileNameTemplate,
+      GENERIC_CONVERTER_OUTPUT_BATCH_NAME_PATTERN: config.outputBatchNamePattern
+    };
+    if (config.converterScriptPath) {
+      env.COVER_MCAP_CONVERTER_SCRIPT = config.converterScriptPath;
+    }
+    return {
+      command: config.pythonPath || "python3",
+      args,
+      env
+    };
+  }
+  expandTemplate(arg, config) {
+    return arg.replace(/\{dataRoot\}/g, config.dataRoot).replace(/\{outputRoot\}/g, config.outputRoot).replace(/\{deviceCode\}/g, config.deviceCode).replace(/\{stableSeconds\}/g, String(config.stableSeconds)).replace(/\{pollIntervalSeconds\}/g, String(config.pollIntervalSeconds)).replace(/\{monitorScriptPath\}/g, config.monitorScriptPath).replace(/\{converterScriptPath\}/g, config.converterScriptPath).replace(/\{outputDirectoryTemplate\}/g, config.outputDirectoryTemplate).replace(/\{outputBatchNameTemplate\}/g, config.outputBatchNameTemplate).replace(/\{outputFileNameTemplate\}/g, config.outputFileNameTemplate).replace(/\{outputBatchNamePattern\}/g, config.outputBatchNamePattern);
+  }
+  statusForTarget(target) {
+    const runtime = this.runtimes.get(target.profile.id);
+    const child = runtime?.child || null;
+    const state = !target.extensionEnabled || !target.config.enabled ? "disabled" : child ? "running" : runtime?.lastError ? "failed" : "stopped";
+    return {
+      profileId: target.profile.id,
+      profileName: target.profile.name,
+      enabled: target.enabled,
+      configured: target.configured,
+      running: Boolean(child),
+      pid: runtime?.pid || null,
+      startedAt: runtime?.startedAt || null,
+      stoppedAt: runtime?.stoppedAt || null,
+      exitCode: runtime?.exitCode ?? null,
+      lastError: runtime?.lastError || null,
+      dataRoot: target.config.dataRoot,
+      outputRoot: target.config.outputRoot,
+      monitorScriptPath: target.config.monitorScriptPath,
+      recentLogs: runtime?.recentLogs || [],
+      state
+    };
+  }
+  appendLog(runtime, text) {
+    const lines = text.split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean);
+    runtime.recentLogs.push(...lines);
+    if (runtime.recentLogs.length > MAX_LOG_LINES) {
+      runtime.recentLogs.splice(0, runtime.recentLogs.length - MAX_LOG_LINES);
+    }
+  }
+  terminateChild(child) {
+    try {
+      if (process.platform !== "win32" && child.pid) {
+        process.kill(-child.pid, "SIGTERM");
+      } else {
+        child.kill("SIGTERM");
+      }
+    } catch {
+      child.kill("SIGTERM");
+    }
+  }
+  emitStatus() {
+    const status = this.getStatus();
+    this.emit("generic-converter:event", status);
+    this.emit("status", status);
+    return status;
+  }
+}
+let instance$5 = null;
+function getGenericConverterService() {
+  if (!instance$5) instance$5 = new GenericConverterService();
   return instance$5;
 }
 function shouldRestartScannerAfterSettingsSave(data) {
@@ -6699,6 +7135,7 @@ function registerAllIpc() {
       getScannerService().stop();
       getScannerService().start();
     }
+    getGenericConverterService().syncWithSettings();
     return { ok: true };
   });
   electron.ipcMain.handle(IPC.SETTINGS_TEST_OSS, async (_event, config) => {
@@ -6819,6 +7256,18 @@ function registerAllIpc() {
   });
   electron.ipcMain.handle(IPC.OSS_BROWSER_OPEN_PREVIEW_WINDOW, (_event, args) => {
     createOSSPreviewWindow(args.key);
+  });
+  electron.ipcMain.handle(IPC.GENERIC_CONVERTER_STATUS, () => {
+    return getGenericConverterService().getStatus();
+  });
+  electron.ipcMain.handle(IPC.GENERIC_CONVERTER_START, async (_event, args) => {
+    return getGenericConverterService().startProfile(args.profileId);
+  });
+  electron.ipcMain.handle(IPC.GENERIC_CONVERTER_STOP, (_event, args) => {
+    return getGenericConverterService().stopProfile(args.profileId);
+  });
+  electron.ipcMain.handle(IPC.GENERIC_CONVERTER_SCAN_NOW, async (_event, args) => {
+    return getGenericConverterService().scanNow(args.profileId);
   });
   electron.ipcMain.handle(IPC.SSH_LIST_MACHINES, () => {
     const db2 = getDb();
@@ -8385,6 +8834,7 @@ function startServices() {
   const taskQueue = getTaskQueueService();
   const taskRunner = getTaskRunnerService();
   const extensionRuntime = getExtensionRuntimeService();
+  const genericConverter = getGenericConverterService();
   const taskRepo = getTaskRepo();
   const scanner = getScannerService();
   taskQueue.setTaskRunner(async (task, signal) => {
@@ -8410,6 +8860,11 @@ function startServices() {
       win.webContents.send(IPC.UPLOAD_QUEUE_EVENT, status);
     }
   });
+  genericConverter.on("status", (status) => {
+    for (const win of electron.BrowserWindow.getAllWindows()) {
+      win.webContents.send(IPC.GENERIC_CONVERTER_EVENT, status);
+    }
+  });
   const unfinishedTaskIds = taskRepo.listUnfinishedTaskIds();
   if (unfinishedTaskIds.length > 0) {
     log.info(`发现 ${unfinishedTaskIds.length} 个未完成任务，等待后台队列分批恢复`);
@@ -8418,6 +8873,7 @@ function startServices() {
   scanner.start();
   scanner.queueReconcileTaskIds(unfinishedTaskIds);
   getCleanupService().start();
+  genericConverter.syncWithSettings();
   log.info("所有服务已启动");
 }
 electron.app.whenReady().then(async () => {
@@ -8482,6 +8938,7 @@ electron.app.on("will-quit", () => {
   getScannerService().stop();
   getTaskQueueService().stop();
   getCleanupService().stop();
+  getGenericConverterService().stopAll();
 });
 electron.app.isQuitting = false;
 electron.app.on("before-quit", () => {

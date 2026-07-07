@@ -13,6 +13,10 @@ import {
   isBuiltinUploadPipelineId
 } from './plugins'
 import {
+  applyGenericConverterScanHandoff,
+  normalizeGenericConverterConfig
+} from './generic-converter'
+import {
   normalizeProviderDirectories,
   normalizeScanConfig
 } from './scan-config'
@@ -356,7 +360,17 @@ function normalizeProfile(rawProfile: unknown, fallback: UploadProfile): UploadP
     ? raw.name.trim()
     : fallback.name
 
-  return {
+  const uploadPipeline = normalizeProfileUploadPipeline(
+    raw.uploadPipeline,
+    raw.plugins,
+    fallback.uploadPipeline
+  )
+  const extensions = normalizeProfileExtensions(
+    raw.extensions,
+    raw.plugins,
+    fallback.extensions
+  )
+  const profile: UploadProfile = {
     id,
     name,
     enabled: typeof raw.enabled === 'boolean' ? raw.enabled : true,
@@ -383,17 +397,17 @@ function normalizeProfile(rawProfile: unknown, fallback: UploadProfile): UploadP
         fallback.providers.tencent
       )
     },
-    uploadPipeline: normalizeProfileUploadPipeline(
-      raw.uploadPipeline,
-      raw.plugins,
-      fallback.uploadPipeline
-    ),
-    extensions: normalizeProfileExtensions(
-      raw.extensions,
-      raw.plugins,
-      fallback.extensions
-    )
+    uploadPipeline,
+    extensions
   }
+
+  const converterEnabled = extensions.enabledIds.includes(EXTENSION_IDS.GENERIC_CONVERTER)
+  const converterConfig = normalizeGenericConverterConfig(
+    extensions.configs[EXTENSION_IDS.GENERIC_CONVERTER]
+  )
+  return converterEnabled
+    ? applyGenericConverterScanHandoff(profile, converterConfig)
+    : profile
 }
 
 export function normalizeProfileUploadPipeline(

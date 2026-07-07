@@ -10,10 +10,19 @@ import { LoadingBlock } from '@/components/ui/loading-block'
 import { PageError } from '@/components/ui/page-error'
 import { PageHeader } from '@/components/ui/page-header'
 import { showToast } from '@/components/ui/toast'
-import { fetchProjectCapabilityStatus, fetchSettings, saveSettings } from '@/lib/ipc-client'
+import {
+  fetchGenericConverterStatus,
+  fetchProjectCapabilityStatus,
+  fetchSettings,
+  saveSettings,
+  scanGenericConverterNow,
+  startGenericConverter,
+  stopGenericConverter
+} from '@/lib/ipc-client'
 import { providersForMode } from '@shared/cloud-upload'
+import { IPC } from '@shared/ipc-channels'
 import { DEFAULT_PROFILE_EXTENSIONS, EXTENSION_IDS } from '@shared/plugins'
-import type { AppSettings, ProjectCapabilityStatus } from '@shared/types'
+import type { AppSettings, GenericConverterStatus, ProjectCapabilityStatus } from '@shared/types'
 
 function formatTime(value: string | null): string {
   if (!value) return '-'
@@ -54,8 +63,11 @@ export default function Plugins() {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [profileId, setProfileId] = useState('')
   const [status, setStatus] = useState<ProjectCapabilityStatus | null>(null)
+  const [genericConverterStatus, setGenericConverterStatus] =
+    useState<GenericConverterStatus | null>(null)
   const [loading, setLoading] = useState(false)
   const [savingExtensionId, setSavingExtensionId] = useState<string | null>(null)
+  const [converterActionProfileId, setConverterActionProfileId] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [confirmOssOpen, setConfirmOssOpen] = useState(false)
 
@@ -78,10 +90,37 @@ export default function Plugins() {
       const id = nextProfileId || profileId || loadedSettings.activeProfileId
       setProfileId(id)
       setStatus(await fetchProjectCapabilityStatus(id))
+      setGenericConverterStatus(await fetchGenericConverterStatus())
     } catch (error) {
       setLoadError(String(error))
     } finally {
       setLoading(false)
+    }
+  }
+
+  const runConverterAction = async (
+    action: 'start' | 'stop' | 'scan'
+  ) => {
+    const targetProfileId = profileId || settings?.activeProfileId
+    if (!targetProfileId) return
+    setConverterActionProfileId(targetProfileId)
+    try {
+      if (action === 'start') await startGenericConverter(targetProfileId)
+      else if (action === 'stop') await stopGenericConverter(targetProfileId)
+      else await scanGenericConverterNow(targetProfileId)
+      setGenericConverterStatus(await fetchGenericConverterStatus())
+      showToast(
+        action === 'start'
+          ? '转换工具已启动'
+          : action === 'stop'
+            ? '转换工具已停止'
+            : '已触发转换工具扫描',
+        'success'
+      )
+    } catch (error) {
+      showToast(`转换工具操作失败: ${error}`, 'error')
+    } finally {
+      setConverterActionProfileId(null)
     }
   }
 
@@ -166,6 +205,16 @@ export default function Plugins() {
 
   useEffect(() => {
     load().catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    const off = window.api.on(
+      IPC.GENERIC_CONVERTER_EVENT,
+      (_event: unknown, data: unknown) => {
+        setGenericConverterStatus(data as GenericConverterStatus)
+      }
+    )
+    return () => off()
   }, [])
 
   return (
@@ -298,6 +347,34 @@ export default function Plugins() {
               <div className="text-xs border rounded-md px-3 py-2 bg-muted/30">
                 配置摘要: {item.configSummary || '-'}
               </div>
+              {item.manifest.id === EXTENSION_IDS.GENERIC_CONVERTER && (() => {
+                const runtime = genericConverterStatus?.profiles.find(
+                  (profile) => profile.profileId === profileId
+                )
+                const runtimeRunning =
+                  runtime?.state === 'running' || runtime?.state === 'starting'
+                return (
+                  <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span>运行状态:</span>
+                      <Badge variant={runtimeRunning ? 'success' : runtime?.lastError ? 'destructive' : 'secondary'}>
+                        {runtime?.state || '-'}
+                      </Badge>
+                      {runtime?.pid && <span>PID: {runtime.pid}</span>}
+                    </div>
+                    <div className="break-all">输入: {runtime?.dataRoot || '-'}</div>
+                    <div className="break-all">输出: {runtime?.outputRoot || '-'}</div>
+                    {runtime?.lastError && (
+                      <div className="text-destructive break-all">{runtime.lastError}</div>
+                    )}
+                    {runtime?.recentLogs && runtime.recentLogs.length > 0 && (
+                      <pre className="max-h-28 overflow-auto whitespace-pre-wrap rounded bg-background p-2 font-mono text-[11px]">
+                        {runtime.recentLogs.slice(-8).join('\n')}
+                      </pre>
+                    )}
+                  </div>
+                )
+              })()}
               <div className="text-xs text-muted-foreground space-y-1">
                 <div>
                   最近运行:{' '}
@@ -337,6 +414,48 @@ export default function Plugins() {
                     <ExternalLink className="h-4 w-4 mr-1" />
                     {item.enabled ? '打开 OSS 浏览' : '启用并打开'}
                   </Button>
+                )}
+                {item.manifest.id === EXTENSION_IDS.GENERIC_CONVERTER && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={
+                        converterActionProfileId === profileId ||
+                        !item.enabled ||
+                        ['running', 'starting'].includes(
+                          genericConverterStatus?.profiles.find((profile) => profile.profileId === profileId)?.state || ''
+                        )
+                      }
+                      onClick={() => runConverterAction('start')}
+                    >
+                      <Power className="h-4 w-4 mr-1" />
+                      启动
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={
+                        converterActionProfileId === profileId ||
+                        !['running', 'starting'].includes(
+                          genericConverterStatus?.profiles.find((profile) => profile.profileId === profileId)?.state || ''
+                        )
+                      }
+                      onClick={() => runConverterAction('stop')}
+                    >
+                      <PowerOff className="h-4 w-4 mr-1" />
+                      停止
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={converterActionProfileId === profileId || !item.enabled}
+                      onClick={() => runConverterAction('scan')}
+                    >
+                      <RefreshCw className="h-4 w-4 mr-1" />
+                      立即扫描
+                    </Button>
+                  </>
                 )}
                 {item.manifest.id === EXTENSION_IDS.WEBHOOK_NOTIFIER && (
                   <Button size="sm" variant="outline" onClick={() => navigate('/settings')}>

@@ -10,6 +10,7 @@ import { getOSSUploadService } from '../services/oss-upload.service'
 import { getTencentS3UploadService } from '../services/tencent-s3-upload.service'
 import { getOSSBrowserService } from '../services/oss-browser.service'
 import { getExtensionRuntimeService } from '../services/extension-runtime.service'
+import { getGenericConverterService } from '../services/generic-converter.service'
 import { getCleanupService } from '../services/cleanup.service'
 import { getDayFolderRepo } from '../db/day-folder.repo'
 import { getDayFolderService } from '../services/day-folder.service'
@@ -234,6 +235,7 @@ export function registerAllIpc(): void {
       getScannerService().stop()
       getScannerService().start()
     }
+    getGenericConverterService().syncWithSettings()
     return { ok: true }
   })
 
@@ -383,6 +385,23 @@ export function registerAllIpc(): void {
 
   ipcMain.handle(IPC.OSS_BROWSER_OPEN_PREVIEW_WINDOW, (_event, args: { key: string }) => {
     createOSSPreviewWindow(args.key)
+  })
+
+  // ---- 通用转换工具插件 ----
+  ipcMain.handle(IPC.GENERIC_CONVERTER_STATUS, () => {
+    return getGenericConverterService().getStatus()
+  })
+
+  ipcMain.handle(IPC.GENERIC_CONVERTER_START, async (_event, args: { profileId: string }) => {
+    return getGenericConverterService().startProfile(args.profileId)
+  })
+
+  ipcMain.handle(IPC.GENERIC_CONVERTER_STOP, (_event, args: { profileId: string }) => {
+    return getGenericConverterService().stopProfile(args.profileId)
+  })
+
+  ipcMain.handle(IPC.GENERIC_CONVERTER_SCAN_NOW, async (_event, args: { profileId: string }) => {
+    return getGenericConverterService().scanNow(args.profileId)
   })
 
   // ---- SSH 机器 CRUD ----

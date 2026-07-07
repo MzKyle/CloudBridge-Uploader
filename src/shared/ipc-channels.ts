@@ -64,6 +64,13 @@ export const IPC = {
   OSS_BROWSER_GET_IMAGE: 'oss-browser:get-image',
   OSS_BROWSER_OPEN_PREVIEW_WINDOW: 'oss-browser:open-preview-window',
 
+  // 通用转换工具
+  GENERIC_CONVERTER_STATUS: 'generic-converter:status',
+  GENERIC_CONVERTER_START: 'generic-converter:start',
+  GENERIC_CONVERTER_STOP: 'generic-converter:stop',
+  GENERIC_CONVERTER_SCAN_NOW: 'generic-converter:scan-now',
+  GENERIC_CONVERTER_EVENT: 'generic-converter:event',
+
   // SSH / rsync
   SSH_LIST_MACHINES: 'ssh:list-machines',
   SSH_ADD_MACHINE: 'ssh:add-machine',

@@ -9,6 +9,7 @@ import {
   normalizeProfileExtensions,
   normalizeProfileUploadPipeline
 } from '@shared/upload-profile'
+import { normalizeGenericConverterConfig } from '@shared/generic-converter'
 import type {
   ExtensionManifest,
   PluginProfileStatus,
@@ -59,6 +60,13 @@ function summarizeExtensionConfig(extension: ExtensionManifest, rawConfig: unkno
   }
   if (extension.id === EXTENSION_IDS.OSS_BROWSER) {
     return '使用当前 Profile 的阿里云 OSS 配置'
+  }
+  if (extension.id === EXTENSION_IDS.GENERIC_CONVERTER) {
+    const config = normalizeGenericConverterConfig(rawConfig)
+    if (!config.enabled) return '未启用'
+    const dataRoot = config.dataRoot || '-'
+    const outputRoot = config.outputRoot || '-'
+    return `输入=${dataRoot}; 输出=${outputRoot}`
   }
   return ''
 }

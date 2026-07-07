@@ -6,7 +6,8 @@ import type {
   TaskDetail, TaskListQuery, UploadQueueStartInput, UploadQueueStatus,
   UploadQueueStopInput, PluginManifest, PluginProfileStatus, ProjectCapabilityStatus, TaskPluginRun,
   UploadPipelineManifest,
-  OSSListQuery, OSSListResult, OSSObjectHead, OSSImageResult
+  OSSListQuery, OSSListResult, OSSObjectHead, OSSImageResult,
+  GenericConverterStatus
 } from '@shared/types'
 import type { UploadPathPreview } from '@shared/upload-profile'
 
@@ -176,6 +177,23 @@ export async function getOSSImagePreview(key: string, maxBytes?: number): Promis
 
 export async function openOSSPreviewWindow(key: string): Promise<void> {
   await api.invoke(IPC.OSS_BROWSER_OPEN_PREVIEW_WINDOW, { key })
+}
+
+// ---- 通用转换工具 ----
+export async function fetchGenericConverterStatus(): Promise<GenericConverterStatus> {
+  return (await api.invoke(IPC.GENERIC_CONVERTER_STATUS)) as GenericConverterStatus
+}
+
+export async function startGenericConverter(profileId: string): Promise<GenericConverterStatus> {
+  return (await api.invoke(IPC.GENERIC_CONVERTER_START, { profileId })) as GenericConverterStatus
+}
+
+export async function stopGenericConverter(profileId: string): Promise<GenericConverterStatus> {
+  return (await api.invoke(IPC.GENERIC_CONVERTER_STOP, { profileId })) as GenericConverterStatus
+}
+
+export async function scanGenericConverterNow(profileId: string): Promise<GenericConverterStatus> {
+  return (await api.invoke(IPC.GENERIC_CONVERTER_SCAN_NOW, { profileId })) as GenericConverterStatus
 }
 
 // ---- SSH ----

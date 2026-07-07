@@ -5,6 +5,7 @@ import type {
   ProfileUploadPipelineConfig,
   UploadPipelineManifest
 } from './types'
+import { DEFAULT_GENERIC_CONVERTER_CONFIG } from './generic-converter'
 
 export const UPLOAD_PIPELINE_IDS = {
   STANDARD_UPLOAD: 'standard-upload',
@@ -13,13 +14,15 @@ export const UPLOAD_PIPELINE_IDS = {
 
 export const EXTENSION_IDS = {
   WEBHOOK_NOTIFIER: 'webhook-notifier',
-  OSS_BROWSER: 'oss-browser'
+  OSS_BROWSER: 'oss-browser',
+  GENERIC_CONVERTER: 'generic-converter'
 } as const
 
 export const PLUGIN_IDS = {
   MODULE1_PREUPLOAD: 'module1-preupload',
   WEBHOOK_NOTIFIER: EXTENSION_IDS.WEBHOOK_NOTIFIER,
-  OSS_BROWSER: EXTENSION_IDS.OSS_BROWSER
+  OSS_BROWSER: EXTENSION_IDS.OSS_BROWSER,
+  GENERIC_CONVERTER: EXTENSION_IDS.GENERIC_CONVERTER
 } as const
 
 export const BUILTIN_UPLOAD_PIPELINES: UploadPipelineManifest[] = [
@@ -53,6 +56,13 @@ export const BUILTIN_EXTENSIONS: ExtensionManifest[] = [
     version: '1.0.0',
     category: 'tool',
     description: '使用当前 Profile 的阿里云 OSS 配置只读浏览对象并预览图片。'
+  },
+  {
+    id: EXTENSION_IDS.GENERIC_CONVERTER,
+    name: '通用转换工具',
+    version: '1.0.0',
+    category: 'tool',
+    description: '按 Profile 启动外部监控转换脚本，转换产物继续由现有上传配置处理。'
   }
 ]
 
@@ -73,6 +83,9 @@ export const DEFAULT_PROFILE_EXTENSIONS: ProfileExtensionConfig = {
     },
     [EXTENSION_IDS.OSS_BROWSER]: {
       enabled: false
+    },
+    [EXTENSION_IDS.GENERIC_CONVERTER]: {
+      ...DEFAULT_GENERIC_CONVERTER_CONFIG
     }
   }
 }
@@ -82,7 +95,8 @@ export const DEFAULT_PROFILE_PLUGINS: ProfilePluginConfig = {
   order: [
     PLUGIN_IDS.MODULE1_PREUPLOAD,
     PLUGIN_IDS.WEBHOOK_NOTIFIER,
-    PLUGIN_IDS.OSS_BROWSER
+    PLUGIN_IDS.OSS_BROWSER,
+    PLUGIN_IDS.GENERIC_CONVERTER
   ],
   configs: {
     [PLUGIN_IDS.MODULE1_PREUPLOAD]: {
@@ -95,6 +109,9 @@ export const DEFAULT_PROFILE_PLUGINS: ProfilePluginConfig = {
     },
     [PLUGIN_IDS.OSS_BROWSER]: {
       enabled: false
+    },
+    [PLUGIN_IDS.GENERIC_CONVERTER]: {
+      ...DEFAULT_GENERIC_CONVERTER_CONFIG
     }
   }
 }

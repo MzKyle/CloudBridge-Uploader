@@ -32,6 +32,10 @@ import {
   EXTENSION_IDS,
   UPLOAD_PIPELINE_IDS
 } from "@shared/plugins";
+import {
+  DEFAULT_GENERIC_CONVERTER_CONFIG,
+  normalizeGenericConverterConfig
+} from "@shared/generic-converter";
 import type { AppSettings, CloudProvider, UploadPathMode, UploadProfile } from "@shared/types";
 import type { UploadPathPreview } from "@shared/upload-profile";
 
@@ -71,6 +75,35 @@ function parseWebhookHeaders(value: string): Record<string, string> {
   );
 }
 
+function stringifyEnv(value: unknown): string {
+  return JSON.stringify(isRecord(value) ? value : {}, null, 2);
+}
+
+function parseEnv(value: string): Record<string, string> {
+  const trimmed = value.trim();
+  if (!trimmed) return {};
+  const parsed = JSON.parse(trimmed) as unknown;
+  if (!isRecord(parsed)) {
+    throw new Error("环境变量必须是 JSON 对象");
+  }
+  return Object.fromEntries(
+    Object.entries(parsed).map(([key, envValue]) => [key, String(envValue)]),
+  );
+}
+
+function stringifyArgs(value: unknown): string {
+  return Array.isArray(value)
+    ? value.map((item) => String(item)).join("\n")
+    : "";
+}
+
+function parseArgs(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
 export default function Settings() {
   const { settings, loading, loadSettings, saveSettings } = useSettingsStore();
   const [local, setLocal] = useState<AppSettings>(settings);
@@ -98,6 +131,9 @@ export default function Settings() {
   const [profilePreviewLoading, setProfilePreviewLoading] = useState(false);
   const [webhookHeaderDrafts, setWebhookHeaderDrafts] = useState<Record<string, string>>({});
   const [webhookHeaderErrors, setWebhookHeaderErrors] = useState<Record<string, string>>({});
+  const [converterEnvDrafts, setConverterEnvDrafts] = useState<Record<string, string>>({});
+  const [converterEnvErrors, setConverterEnvErrors] = useState<Record<string, string>>({});
+  const [converterArgsDrafts, setConverterArgsDrafts] = useState<Record<string, string>>({});
   const scanDirectoryTrees = useMemo(
     () => ({
       aliyun: buildPathTreeFromPaths(
@@ -134,6 +170,9 @@ export default function Settings() {
   useEffect(() => {
     setLocal(settings);
     setEditingProfileId(settings.activeProfileId);
+    setConverterEnvDrafts({});
+    setConverterEnvErrors({});
+    setConverterArgsDrafts({});
   }, [settings]);
 
   useEffect(() => {
@@ -729,6 +768,7 @@ export default function Settings() {
     const module1Enabled = uploadPipeline.id === UPLOAD_PIPELINE_IDS.SANY_MODULE1_UPLOAD;
     const webhookEnabled = enabledIds.has(EXTENSION_IDS.WEBHOOK_NOTIFIER);
     const ossBrowserEnabled = enabledIds.has(EXTENSION_IDS.OSS_BROWSER);
+    const genericConverterEnabled = enabledIds.has(EXTENSION_IDS.GENERIC_CONVERTER);
     const module1Config =
       typeof uploadPipeline.config === "object" &&
       uploadPipeline.config !== null
@@ -739,8 +779,18 @@ export default function Settings() {
       extensions.configs?.[EXTENSION_IDS.WEBHOOK_NOTIFIER] !== null
         ? extensions.configs[EXTENSION_IDS.WEBHOOK_NOTIFIER] as Record<string, unknown>
         : {};
+    const genericConverterConfig = normalizeGenericConverterConfig({
+      ...DEFAULT_GENERIC_CONVERTER_CONFIG,
+      ...(isRecord(extensions.configs?.[EXTENSION_IDS.GENERIC_CONVERTER])
+        ? extensions.configs[EXTENSION_IDS.GENERIC_CONVERTER] as Record<string, unknown>
+        : {}),
+    });
     const webhookHeadersText =
       webhookHeaderDrafts[profile.id] ?? stringifyWebhookHeaders(webhookConfig.headers);
+    const converterEnvText =
+      converterEnvDrafts[profile.id] ?? stringifyEnv(genericConverterConfig.env);
+    const converterArgsText =
+      converterArgsDrafts[profile.id] ?? stringifyArgs(genericConverterConfig.extraArgs);
 
     return (
       <div className="rounded-md border p-3 space-y-4">
@@ -815,6 +865,371 @@ export default function Settings() {
             />
             启用 OSS 浏览工具插件
           </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={genericConverterEnabled}
+              onChange={(event) =>
+                updateProfileExtensionEnabled(
+                  profile.id,
+                  EXTENSION_IDS.GENERIC_CONVERTER,
+                  event.target.checked,
+                )
+              }
+              className="rounded"
+            />
+            启用通用转换工具插件
+          </label>
+        </div>
+
+        <div className="rounded-md border p-3 space-y-3">
+          <div className="text-sm font-medium">通用转换工具</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <Label>Python 命令</Label>
+              <Input
+                value={genericConverterConfig.pythonPath}
+                disabled={!genericConverterEnabled}
+                onChange={(event) =>
+                  updateProfileExtensionConfig(
+                    profile.id,
+                    EXTENSION_IDS.GENERIC_CONVERTER,
+                    {
+                      ...genericConverterConfig,
+                      enabled: genericConverterEnabled,
+                      pythonPath: event.target.value,
+                    },
+                  )
+                }
+                className="mt-1"
+                placeholder="python3"
+              />
+            </div>
+            <div>
+              <Label>设备/项目标识</Label>
+              <Input
+                value={genericConverterConfig.deviceCode}
+                disabled={!genericConverterEnabled}
+                onChange={(event) =>
+                  updateProfileExtensionConfig(
+                    profile.id,
+                    EXTENSION_IDS.GENERIC_CONVERTER,
+                    {
+                      ...genericConverterConfig,
+                      enabled: genericConverterEnabled,
+                      deviceCode: event.target.value,
+                    },
+                  )
+                }
+                className="mt-1"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <Label>监控脚本路径</Label>
+              <Input
+                value={genericConverterConfig.monitorScriptPath}
+                disabled={!genericConverterEnabled}
+                onChange={(event) =>
+                  updateProfileExtensionConfig(
+                    profile.id,
+                    EXTENSION_IDS.GENERIC_CONVERTER,
+                    {
+                      ...genericConverterConfig,
+                      enabled: genericConverterEnabled,
+                      monitorScriptPath: event.target.value,
+                    },
+                  )
+                }
+                className="mt-1 font-mono"
+                placeholder="/home/kyle/sany/盖面数采上传/monitor_cover_dataset.py"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <Label>转换脚本路径</Label>
+              <Input
+                value={genericConverterConfig.converterScriptPath}
+                disabled={!genericConverterEnabled}
+                onChange={(event) =>
+                  updateProfileExtensionConfig(
+                    profile.id,
+                    EXTENSION_IDS.GENERIC_CONVERTER,
+                    {
+                      ...genericConverterConfig,
+                      enabled: genericConverterEnabled,
+                      converterScriptPath: event.target.value,
+                    },
+                  )
+                }
+                className="mt-1 font-mono"
+                placeholder="/home/kyle/sany/盖面数采上传/convert_cover_dataset_to_mcap.py"
+              />
+            </div>
+            <div>
+              <Label>输入根目录</Label>
+              <Input
+                value={genericConverterConfig.dataRoot}
+                disabled={!genericConverterEnabled}
+                onChange={(event) =>
+                  updateProfileExtensionConfig(
+                    profile.id,
+                    EXTENSION_IDS.GENERIC_CONVERTER,
+                    {
+                      ...genericConverterConfig,
+                      enabled: genericConverterEnabled,
+                      dataRoot: event.target.value,
+                    },
+                  )
+                }
+                className="mt-1 font-mono"
+                placeholder="/mnt/data/data"
+              />
+            </div>
+            <div>
+              <Label>输出根目录</Label>
+              <Input
+                value={genericConverterConfig.outputRoot}
+                disabled={!genericConverterEnabled}
+                onChange={(event) =>
+                  updateProfileExtensionConfig(
+                    profile.id,
+                    EXTENSION_IDS.GENERIC_CONVERTER,
+                    {
+                      ...genericConverterConfig,
+                      enabled: genericConverterEnabled,
+                      outputRoot: event.target.value,
+                    },
+                  )
+                }
+                className="mt-1 font-mono"
+                placeholder="/mnt/data/mcap_data"
+              />
+            </div>
+            <div>
+              <Label>稳定等待秒数</Label>
+              <Input
+                type="number"
+                min={0}
+                value={genericConverterConfig.stableSeconds}
+                disabled={!genericConverterEnabled}
+                onChange={(event) =>
+                  updateProfileExtensionConfig(
+                    profile.id,
+                    EXTENSION_IDS.GENERIC_CONVERTER,
+                    {
+                      ...genericConverterConfig,
+                      enabled: genericConverterEnabled,
+                      stableSeconds: Number(event.target.value),
+                    },
+                  )
+                }
+                className="mt-1"
+              />
+            </div>
+            <div>
+              <Label>轮询间隔秒数</Label>
+              <Input
+                type="number"
+                min={1}
+                value={genericConverterConfig.pollIntervalSeconds}
+                disabled={!genericConverterEnabled}
+                onChange={(event) =>
+                  updateProfileExtensionConfig(
+                    profile.id,
+                    EXTENSION_IDS.GENERIC_CONVERTER,
+                    {
+                      ...genericConverterConfig,
+                      enabled: genericConverterEnabled,
+                      pollIntervalSeconds: Number(event.target.value),
+                    },
+                  )
+                }
+                className="mt-1"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <Label>输出目录模板</Label>
+              <Input
+                value={genericConverterConfig.outputDirectoryTemplate}
+                disabled={!genericConverterEnabled}
+                onChange={(event) =>
+                  updateProfileExtensionConfig(
+                    profile.id,
+                    EXTENSION_IDS.GENERIC_CONVERTER,
+                    {
+                      ...genericConverterConfig,
+                      enabled: genericConverterEnabled,
+                      outputDirectoryTemplate: event.target.value,
+                    },
+                  )
+                }
+                className="mt-1 font-mono"
+                placeholder="{outputRoot}/{date}"
+              />
+            </div>
+            <div>
+              <Label>输出批次名模板</Label>
+              <Input
+                value={genericConverterConfig.outputBatchNameTemplate}
+                disabled={!genericConverterEnabled}
+                onChange={(event) =>
+                  updateProfileExtensionConfig(
+                    profile.id,
+                    EXTENSION_IDS.GENERIC_CONVERTER,
+                    {
+                      ...genericConverterConfig,
+                      enabled: genericConverterEnabled,
+                      outputBatchNameTemplate: event.target.value,
+                    },
+                  )
+                }
+                className="mt-1 font-mono"
+                placeholder="{deviceCode}_{startTs}_{endTs}"
+              />
+            </div>
+            <div>
+              <Label>输出文件名模板</Label>
+              <Input
+                value={genericConverterConfig.outputFileNameTemplate}
+                disabled={!genericConverterEnabled}
+                onChange={(event) =>
+                  updateProfileExtensionConfig(
+                    profile.id,
+                    EXTENSION_IDS.GENERIC_CONVERTER,
+                    {
+                      ...genericConverterConfig,
+                      enabled: genericConverterEnabled,
+                      outputFileNameTemplate: event.target.value,
+                    },
+                  )
+                }
+                className="mt-1 font-mono"
+                placeholder="{batchName}.mcap"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <Label>输出批次目录正则</Label>
+              <Input
+                value={genericConverterConfig.outputBatchNamePattern}
+                disabled={!genericConverterEnabled}
+                onChange={(event) =>
+                  updateProfileExtensionConfig(
+                    profile.id,
+                    EXTENSION_IDS.GENERIC_CONVERTER,
+                    {
+                      ...genericConverterConfig,
+                      enabled: genericConverterEnabled,
+                      outputBatchNamePattern: event.target.value,
+                    },
+                  )
+                }
+                className="mt-1 font-mono"
+              />
+            </div>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={genericConverterConfig.retryFailed}
+              disabled={!genericConverterEnabled}
+              onChange={(event) =>
+                updateProfileExtensionConfig(
+                  profile.id,
+                  EXTENSION_IDS.GENERIC_CONVERTER,
+                  {
+                    ...genericConverterConfig,
+                    enabled: genericConverterEnabled,
+                    retryFailed: event.target.checked,
+                  },
+                )
+              }
+              className="rounded"
+            />
+            重试失败批次
+          </label>
+          <div>
+            <Label>环境变量 (JSON)</Label>
+            <textarea
+              value={converterEnvText}
+              disabled={!genericConverterEnabled}
+              onChange={(event) => {
+                setConverterEnvDrafts((prev) => ({
+                  ...prev,
+                  [profile.id]: event.target.value,
+                }));
+                setConverterEnvErrors((prev) => {
+                  if (!prev[profile.id]) return prev;
+                  const next = { ...prev };
+                  delete next[profile.id];
+                  return next;
+                });
+              }}
+              onBlur={() => {
+                try {
+                  const env = parseEnv(converterEnvText);
+                  updateProfileExtensionConfig(
+                    profile.id,
+                    EXTENSION_IDS.GENERIC_CONVERTER,
+                    {
+                      ...genericConverterConfig,
+                      enabled: genericConverterEnabled,
+                      env,
+                    },
+                  );
+                  setConverterEnvDrafts((prev) => {
+                    const next = { ...prev };
+                    delete next[profile.id];
+                    return next;
+                  });
+                  setConverterEnvErrors((prev) => {
+                    const next = { ...prev };
+                    delete next[profile.id];
+                    return next;
+                  });
+                } catch (error) {
+                  setConverterEnvErrors((prev) => ({
+                    ...prev,
+                    [profile.id]: error instanceof Error ? error.message : String(error),
+                  }));
+                }
+              }}
+              className="mt-1 min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono disabled:cursor-not-allowed disabled:opacity-50"
+              placeholder={'{\n  "COVER_MCAP_WORKSPACE_SETUP": "/path/to/install/setup.bash"\n}'}
+            />
+            {converterEnvErrors[profile.id] && (
+              <InlineFieldError message={converterEnvErrors[profile.id]} />
+            )}
+          </div>
+          <div>
+            <Label>额外参数</Label>
+            <textarea
+              value={converterArgsText}
+              disabled={!genericConverterEnabled}
+              onChange={(event) =>
+                setConverterArgsDrafts((prev) => ({
+                  ...prev,
+                  [profile.id]: event.target.value,
+                }))
+              }
+              onBlur={() => {
+                updateProfileExtensionConfig(
+                  profile.id,
+                  EXTENSION_IDS.GENERIC_CONVERTER,
+                  {
+                    ...genericConverterConfig,
+                    enabled: genericConverterEnabled,
+                    extraArgs: parseArgs(converterArgsText),
+                  },
+                );
+                setConverterArgsDrafts((prev) => {
+                  const next = { ...prev };
+                  delete next[profile.id];
+                  return next;
+                });
+              }}
+              className="mt-1 min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono disabled:cursor-not-allowed disabled:opacity-50"
+              placeholder="--write-meta-json"
+            />
+          </div>
         </div>
 
         <div>

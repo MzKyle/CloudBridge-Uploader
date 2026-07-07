@@ -18,6 +18,7 @@ import { getTaskQueueService } from './services/task-queue.service'
 import { getTaskRunnerService } from './services/task-runner.service'
 import { getExtensionRuntimeService } from './services/extension-runtime.service'
 import { getCleanupService } from './services/cleanup.service'
+import { getGenericConverterService } from './services/generic-converter.service'
 import { getTaskRepo } from './db/task.repo'
 import { initLogger } from './utils/logger'
 import { IPC } from '@shared/ipc-channels'
@@ -180,6 +181,7 @@ function startServices(): void {
   const taskQueue = getTaskQueueService()
   const taskRunner = getTaskRunnerService()
   const extensionRuntime = getExtensionRuntimeService()
+  const genericConverter = getGenericConverterService()
   const taskRepo = getTaskRepo()
   const scanner = getScannerService()
 
@@ -213,6 +215,12 @@ function startServices(): void {
     }
   })
 
+  genericConverter.on('status', (status) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IPC.GENERIC_CONVERTER_EVENT, status)
+    }
+  })
+
   // 恢复未完成的任务
   const unfinishedTaskIds = taskRepo.listUnfinishedTaskIds()
   if (unfinishedTaskIds.length > 0) {
@@ -229,6 +237,9 @@ function startServices(): void {
 
   // 启动自动清理服务
   getCleanupService().start()
+
+  // 启动按 Profile 配置的外部转换工具
+  genericConverter.syncWithSettings()
 
   log.info('所有服务已启动')
 }
@@ -315,6 +326,7 @@ app.on('will-quit', () => {
   getScannerService().stop()
   getTaskQueueService().stop()
   getCleanupService().stop()
+  getGenericConverterService().stopAll()
 })
 
   ; (app as unknown as { isQuitting: boolean }).isQuitting = false

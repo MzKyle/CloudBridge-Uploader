@@ -316,8 +316,56 @@ export interface WebhookConfig {
   enabled: boolean
 }
 
+export interface GenericConverterConfig {
+  enabled: boolean
+  pythonPath: string
+  monitorScriptPath: string
+  converterScriptPath: string
+  dataRoot: string
+  outputRoot: string
+  deviceCode: string
+  stableSeconds: number
+  pollIntervalSeconds: number
+  retryFailed: boolean
+  env: Record<string, string>
+  extraArgs: string[]
+  outputDirectoryTemplate: string
+  outputBatchNameTemplate: string
+  outputFileNameTemplate: string
+  outputBatchNamePattern: string
+}
+
+export type GenericConverterRuntimeState =
+  | 'disabled'
+  | 'stopped'
+  | 'starting'
+  | 'running'
+  | 'failed'
+
+export interface GenericConverterProfileStatus {
+  profileId: string
+  profileName: string
+  enabled: boolean
+  configured: boolean
+  state: GenericConverterRuntimeState
+  running: boolean
+  pid: number | null
+  startedAt: string | null
+  stoppedAt: string | null
+  exitCode: number | null
+  lastError: string | null
+  dataRoot: string
+  outputRoot: string
+  monitorScriptPath: string
+  recentLogs: string[]
+}
+
+export interface GenericConverterStatus {
+  profiles: GenericConverterProfileStatus[]
+}
+
 export type UploadPipelineId = 'standard-upload' | 'sany-module1-upload'
-export type ExtensionId = 'webhook-notifier' | 'oss-browser'
+export type ExtensionId = 'webhook-notifier' | 'oss-browser' | 'generic-converter'
 export type PluginCategory = 'pipeline' | 'preUpload' | 'notification' | 'tool'
 export type PluginRunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
 

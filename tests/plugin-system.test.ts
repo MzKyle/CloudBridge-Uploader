@@ -158,7 +158,8 @@ test('builtin capability registries expose the fixed first-party capabilities', 
     BUILTIN_EXTENSIONS.map((extension) => extension.id),
     [
       EXTENSION_IDS.WEBHOOK_NOTIFIER,
-      EXTENSION_IDS.OSS_BROWSER
+      EXTENSION_IDS.OSS_BROWSER,
+      EXTENSION_IDS.GENERIC_CONVERTER
     ]
   )
 })
