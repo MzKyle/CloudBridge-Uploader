@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DEFAULT_SETTINGS } from '../src/shared/constants'
 import { getActiveProfileScanRoots } from '../src/shared/scan-config'
-import { providersForMode } from '../src/shared/cloud-upload'
+import { destinationsForProviders, providersForMode } from '../src/shared/cloud-upload'
 import {
   resolveProfileUploadSnapshot
 } from '../src/shared/upload-profile'
@@ -14,6 +14,7 @@ import { shouldRestartScannerAfterSettingsSave } from '../src/shared/settings-ef
 import type {
   AppSettings,
   CloudProvider,
+  PathMappingConfig,
   UploadPathMode,
   UploadProfile
 } from '../src/shared/types'
@@ -56,12 +57,37 @@ function createProfile(input: {
   enabled?: boolean
 }): UploadProfile {
   const base = cloneDefaults().profiles[0]
+  const targetMode = input.targetMode
+  const activeProviders = providersForMode(targetMode)
+  const providerDirectories = {
+    aliyun: input.directories.aliyun ?? [],
+    tencent: input.directories.tencent ?? []
+  }
+  const providers = {
+    aliyun: {
+      ...base.providers.aliyun,
+      ...input.aliyun
+    },
+    tencent: {
+      ...base.providers.tencent,
+      ...input.tencent
+    }
+  }
+  const sourceRoots = Array.from(
+    new Set(activeProviders.flatMap((provider) => providerDirectories[provider]))
+  )
   return {
     ...base,
     id: input.id,
     name: input.name,
     enabled: input.enabled ?? true,
-    targetMode: input.targetMode,
+    targetMode,
+    source: {
+      root: sourceRoots[0] || '',
+      roots: sourceRoots
+    },
+    destinations: destinationsForProviders(activeProviders),
+    pathMapping: pathMappingFromProviderConfig(providers[activeProviders[0]]),
     filter: {
       whitelist: [],
       blacklist: [],
@@ -69,23 +95,42 @@ function createProfile(input: {
       suffixes: input.suffixes
     },
     scan: {
-      providerDirectories: {
-        aliyun: input.directories.aliyun ?? [],
-        tencent: input.directories.tencent ?? []
-      },
+      providerDirectories,
       workDirNamePattern: '^\\d{2}-\\d{2}-\\d{2}$'
     },
-    providers: {
-      aliyun: {
-        ...base.providers.aliyun,
-        ...input.aliyun
-      },
-      tencent: {
-        ...base.providers.tencent,
-        ...input.tencent
-      }
+    providers
+  }
+}
+
+function pathMappingFromProviderConfig(
+  provider: UploadProfile['providers']['aliyun']
+): PathMappingConfig {
+  if (provider.pathMode === 'template') {
+    return {
+      mode: 'template',
+      template: provider.objectKeyTemplate || '{relativePath}'
     }
   }
+  if (provider.pathMode === 'date-workdir') {
+    return {
+      mode: 'template',
+      template: '{date}/{session}/{relativePath}'
+    }
+  }
+  if (provider.pathMode === 'keep-source') {
+    return {
+      mode: 'template',
+      template: '{sourceRelativePath}/{relativePath}'
+    }
+  }
+  if (provider.pathMode === 'last-segments') {
+    const count = Math.max(1, Math.min(3, provider.pathSegmentCount || 1))
+    return {
+      mode: 'template',
+      template: `{sourceLast${count}}/{relativePath}`
+    }
+  }
+  return { mode: 'keep-relative' }
 }
 
 function saveProfiles(profiles: UploadProfile[], activeProfileId = profiles[0].id): void {
@@ -344,17 +389,16 @@ test('scanner creates isolated profile tasks and profile filters do not leak', a
     saveProfiles([profileA, profileB, profileC])
 
     const scanner = new ScannerService() as unknown as ScannerService & {
-      scanRootDirectory: (
-        root: {
-          directory: string
-          providers: CloudProvider[]
-          profileId: string
-          profileName: string
-        },
-        today: string,
-        workDirNamePattern: string | undefined,
-        seenChildPaths: Set<string>
-      ) => Promise<unknown>
+	      scanRootDirectory: (
+	        root: {
+	          directory: string
+	          providers: CloudProvider[]
+	          profileId: string
+	          profileName: string
+	        },
+	        seenChildPaths: Set<string>,
+	        profile?: UploadProfile
+	      ) => Promise<unknown>
       queueReconcileTask: (task: unknown) => void
     }
     scanner.queueReconcileTask = () => {}
@@ -366,13 +410,12 @@ test('scanner creates isolated profile tasks and profile filters do not leak', a
         {
           directory,
           providers: providersForMode(profile.targetMode),
-          profileId: profile.id,
-          profileName: profile.name
-        },
-        TEST_DATE,
-        profile.scan.workDirNamePattern,
-        new Set()
-      )
+	          profileId: profile.id,
+	          profileName: profile.name
+	        },
+	        new Set(),
+	        profile
+	      )
     }
 
     const repo = new TaskRepo()
@@ -391,10 +434,11 @@ test('scanner creates isolated profile tasks and profile filters do not leak', a
     assert.equal(taskA.destinations[0].pathMode, 'template')
     assert.equal(taskA.destinations[0].objectKeyTemplate, 'a/{relativePath}')
 
-    assert.deepEqual(taskB.destinations.map((item) => item.provider), ['tencent'])
-    assert.equal(taskB.destinations[0].prefix, 'qa/b')
-    assert.equal(taskB.destinations[0].pathMode, 'date-workdir')
-    assert.equal(taskB.destinations[0].uploadRelativePath, `${TEST_DATE}/10-00-02`)
+	    assert.deepEqual(taskB.destinations.map((item) => item.provider), ['tencent'])
+	    assert.equal(taskB.destinations[0].prefix, 'qa/b')
+	    assert.equal(taskB.destinations[0].pathMode, 'template')
+	    assert.equal(taskB.destinations[0].objectKeyTemplate, '{date}/{session}/{relativePath}')
+	    assert.equal(taskB.destinations[0].uploadRelativePath, '')
 
     assert.deepEqual(
       taskC.destinations.map((item) => ({

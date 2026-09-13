@@ -3,6 +3,7 @@ import type {
   AppSettings,
   CloudProvider,
   OSSConfig,
+  PathVariables,
   TencentS3Config,
   UploadPathMode
 } from './types'
@@ -24,6 +25,7 @@ export interface UploadPathResolveContext {
   fallbackDirectoryPath?: string
   dateName?: string
   workDirName?: string
+  variables?: PathVariables
 }
 
 export interface NormalizedUploadPathConfig {
@@ -106,8 +108,13 @@ export function resolveUploadRelativePath(
   if (normalized.pathMode === 'target-root' || normalized.pathMode === 'template') return ''
 
   if (normalized.pathMode === 'date-workdir') {
-    if (context.dateName && context.workDirName) {
-      return joinOssPath(context.dateName, context.workDirName)
+    const dateName = context.variables?.date || context.dateName
+    const workDirName =
+      context.variables?.workDir ||
+      context.variables?.session ||
+      context.workDirName
+    if (dateName && workDirName) {
+      return joinOssPath(dateName, workDirName)
     }
     return (
       deriveDateScopedUploadRelativePath(sourcePath) ||

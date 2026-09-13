@@ -239,30 +239,6 @@ function parseDateFolderName(name) {
 function isDateFolderName(name) {
   return parseDateFolderName(name) !== null;
 }
-function isDateFolderBeforeToday(name, now = /* @__PURE__ */ new Date()) {
-  const folderDate = parseDateFolderName(name);
-  if (!folderDate) return false;
-  const today = new Date(now);
-  today.setHours(0, 0, 0, 0);
-  return folderDate.getTime() < today.getTime();
-}
-function determineDayFolderStatus(dateName, childStatuses, now = /* @__PURE__ */ new Date()) {
-  if (childStatuses.some((status) => status === "failed" || status === "paused")) {
-    return "blocked";
-  }
-  const allTerminal = childStatuses.length > 0 && childStatuses.every(
-    (status) => status === "completed" || status === "synced" || status === "skipped"
-  );
-  if (allTerminal && isDateFolderBeforeToday(dateName, now)) {
-    return childStatuses.some((status) => status === "skipped") ? "completed_with_skips" : "completed";
-  }
-  if (childStatuses.some(
-    (status) => status === null || status === "pending" || status === "scanning" || status === "uploading" || status === "retrying"
-  )) {
-    return "processing";
-  }
-  return "collecting";
-}
 function joinOssPath(...parts) {
   return parts.flatMap((part) => (part || "").replace(/\\/g, "/").split("/")).map((part) => part.trim()).filter((part) => part.length > 0 && part !== ".").join("/");
 }
@@ -327,7 +303,15 @@ function runMigrations(db2) {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       completed_at TEXT,
-      ignored INTEGER NOT NULL DEFAULT 0
+      ignored INTEGER NOT NULL DEFAULT 0,
+      profile_id TEXT,
+      group_key TEXT,
+      variables_json TEXT NOT NULL DEFAULT '{}',
+      upload_group_status TEXT NOT NULL DEFAULT 'open',
+      discovered_at TEXT,
+      sealed_at TEXT,
+      cleanable_at TEXT,
+      cleaned_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS tasks (
@@ -349,6 +333,7 @@ function runMigrations(db2) {
       profile_id TEXT,
       profile_name TEXT,
       profile_snapshot_json TEXT,
+      group_variables_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       completed_at TEXT,
@@ -496,6 +481,10 @@ function runMigrations(db2) {
     db2.exec(`ALTER TABLE tasks ADD COLUMN profile_snapshot_json TEXT`);
     log.info("迁移: tasks 表添加 profile_snapshot_json 列");
   }
+  if (!taskColumns.some((c) => c.name === "group_variables_json")) {
+    db2.exec(`ALTER TABLE tasks ADD COLUMN group_variables_json TEXT NOT NULL DEFAULT '{}'`);
+    log.info("迁移: tasks 表添加 group_variables_json 列");
+  }
   db2.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_day_folder_id ON tasks(day_folder_id)`);
   const taskDestinationColumns = db2.pragma("table_info(task_destinations)");
   const addedDestinationUploadPath = !taskDestinationColumns.some(
@@ -523,6 +512,60 @@ function runMigrations(db2) {
     db2.exec(`ALTER TABLE day_folders ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0`);
     log.info("迁移: day_folders 表添加 ignored 列");
   }
+  const dayFolderAdditions = [
+    ["profile_id", "TEXT"],
+    ["group_key", "TEXT"],
+    ["variables_json", `TEXT NOT NULL DEFAULT '{}'`],
+    ["upload_group_status", `TEXT NOT NULL DEFAULT 'open'`],
+    ["discovered_at", "TEXT"],
+    ["sealed_at", "TEXT"],
+    ["cleanable_at", "TEXT"],
+    ["cleaned_at", "TEXT"]
+  ];
+  for (const [name, definition] of dayFolderAdditions) {
+    if (!dayFolderColumns.some((column) => column.name === name)) {
+      db2.exec(`ALTER TABLE day_folders ADD COLUMN ${name} ${definition}`);
+      log.info(`迁移: day_folders 表添加 ${name} 列`);
+    }
+  }
+  db2.exec(`
+    UPDATE day_folders
+    SET group_key = COALESCE(group_key, date_value),
+        variables_json = CASE
+          WHEN variables_json IS NULL OR variables_json = '{}' THEN
+            '{"date":"' || replace(date_value, '"', '\\"') || '"}'
+          ELSE variables_json
+        END,
+        upload_group_status = CASE
+          WHEN status IN ('completed', 'completed_with_skips')
+            AND (upload_group_status IS NULL OR upload_group_status = '' OR upload_group_status = 'open') THEN 'sealed'
+          WHEN status = 'blocked'
+            AND (upload_group_status IS NULL OR upload_group_status = '' OR upload_group_status = 'open') THEN 'error'
+          WHEN status = 'processing'
+            AND (upload_group_status IS NULL OR upload_group_status = '' OR upload_group_status = 'open') THEN 'closing'
+          WHEN upload_group_status IS NULL OR upload_group_status = '' THEN 'open'
+          ELSE upload_group_status
+        END,
+        discovered_at = COALESCE(discovered_at, created_at),
+        sealed_at = CASE
+          WHEN sealed_at IS NULL AND status IN ('completed', 'completed_with_skips') THEN completed_at
+          ELSE sealed_at
+        END
+  `);
+  db2.exec(`
+    UPDATE tasks
+    SET group_variables_json = COALESCE((
+      SELECT variables_json
+      FROM day_folders
+      WHERE day_folders.id = tasks.day_folder_id
+    ), group_variables_json, '{}')
+    WHERE day_folder_id IS NOT NULL
+      AND (group_variables_json IS NULL OR group_variables_json = '{}')
+  `);
+  db2.exec(`
+    CREATE INDEX IF NOT EXISTS idx_day_folders_upload_group_status
+    ON day_folders(upload_group_status)
+  `);
   const taskFileColumns = db2.pragma("table_info(task_files)");
   const taskFileAdditions = [
     ["mtime_ms", `INTEGER NOT NULL DEFAULT 0`],
@@ -850,8 +893,10 @@ function resolveUploadRelativePath(config, context) {
   const sourcePath = context.sourcePath;
   if (normalized.pathMode === "target-root" || normalized.pathMode === "template") return "";
   if (normalized.pathMode === "date-workdir") {
-    if (context.dateName && context.workDirName) {
-      return joinOssPath(context.dateName, context.workDirName);
+    const dateName = context.variables?.date || context.dateName;
+    const workDirName = context.variables?.workDir || context.variables?.session || context.workDirName;
+    if (dateName && workDirName) {
+      return joinOssPath(dateName, workDirName);
     }
     return deriveDateScopedUploadRelativePath(sourcePath) || (context.fallbackDirectoryPath ? deriveDateScopedUploadRelativePath(context.fallbackDirectoryPath) : null) || lastPathSegment(sourcePath);
   }
@@ -867,7 +912,7 @@ function relativePathFromBase$1(sourcePath, basePath) {
   const base = pathSegments$1(basePath);
   if (source.length === 0) return "";
   let index = 0;
-  while (index < source.length && index < base.length && segmentEquals(source[index], base[index])) {
+  while (index < source.length && index < base.length && segmentEquals$2(source[index], base[index])) {
     index++;
   }
   if (index === base.length && index < source.length) {
@@ -885,13 +930,39 @@ function parentDirectoryPath(path2) {
 function lastPathSegment(path2) {
   return pathSegments$1(path2).at(-1) || "";
 }
-function segmentEquals(a, b) {
+function segmentEquals$2(a, b) {
   if (a.endsWith(":") || b.endsWith(":")) return a.toLowerCase() === b.toLowerCase();
   return a === b;
 }
 function providersForMode(mode) {
   if (mode === "both") return ["aliyun", "tencent"];
   return [mode];
+}
+function providerForConnectionId(connectionId) {
+  const normalized = connectionId.trim().toLowerCase();
+  if (normalized === "aliyun" || normalized === "aliyun-oss") return "aliyun";
+  if (normalized === "tencent" || normalized === "tencent-s3" || normalized === "tencent-turbos3") {
+    return "tencent";
+  }
+  return null;
+}
+function destinationsForProviders(providers) {
+  return providersForMode(modeForProviders(providers)).map((provider) => ({
+    connectionId: provider,
+    required: true
+  }));
+}
+function providersForDestinations(destinations) {
+  const providers = Array.from(
+    new Set(
+      (destinations || []).map((destination) => providerForConnectionId(destination.connectionId)).filter((provider) => Boolean(provider))
+    )
+  );
+  return providers.length > 0 ? providersForMode(modeForProviders(providers)) : [];
+}
+function providersForProfile(profile) {
+  const providers = providersForDestinations(profile.destinations);
+  return providers.length > 0 ? providers : providersForMode(profile.targetMode);
 }
 function modeForProviders(providers) {
   const set = new Set(providers);
@@ -1322,16 +1393,16 @@ class TaskDestinationRepo {
     for (const row of fileRows) this.recalculateLogicalFile(row.id);
   }
 }
-let instance$n = null;
+let instance$o = null;
 function getTaskDestinationRepo() {
-  if (!instance$n) instance$n = new TaskDestinationRepo();
-  return instance$n;
+  if (!instance$o) instance$o = new TaskDestinationRepo();
+  return instance$o;
 }
 function normalizeFolderPath$1(p) {
   return path.normalize(p).replace(/[\\/]+$/, "");
 }
 function rowToTask(row, destinations) {
-  const profileSnapshot = typeof row.profile_snapshot_json === "string" && row.profile_snapshot_json ? safeParseProfile(row.profile_snapshot_json) : null;
+  const profileSnapshot = typeof row.profile_snapshot_json === "string" && row.profile_snapshot_json ? safeParseProfile$1(row.profile_snapshot_json) : null;
   return {
     id: row.id,
     folderPath: row.folder_path,
@@ -1352,16 +1423,29 @@ function rowToTask(row, destinations) {
     profileId: row.profile_id || null,
     profileName: row.profile_name || null,
     profileSnapshot,
+    groupVariables: safeParseVariables$1(row.group_variables_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at || null
   };
 }
-function safeParseProfile(value) {
+function safeParseProfile$1(value) {
   try {
     return JSON.parse(value);
   } catch {
     return null;
+  }
+}
+function safeParseVariables$1(value) {
+  if (typeof value !== "string" || !value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).map(([key, item]) => [key, String(item)])
+    );
+  } catch {
+    return {};
   }
 }
 const UPLOAD_QUEUE_CANDIDATE_STATUSES = [
@@ -1423,30 +1507,36 @@ class TaskRepo {
     const rows = db2.prepare("SELECT * FROM tasks ORDER BY created_at DESC").all();
     return this.rowsToTasks(rows);
   }
-  listContinuouslyMonitored(dateName) {
+  listContinuouslyMonitored(groupKey) {
+    const params = [];
+    const groupCondition = groupKey ? "AND COALESCE(df.group_key, df.date_value) = ?" : "";
+    if (groupKey) params.push(groupKey);
     const rows = getDb().prepare(
       `SELECT t.*
        FROM tasks t
        INNER JOIN day_folders df ON df.id = t.day_folder_id
        WHERE t.source_type = 'local'
          AND t.day_folder_id IS NOT NULL
-         AND df.date_value = ?
+         ${groupCondition}
          AND t.status NOT IN ('skipped', 'paused', 'completed')
        ORDER BY t.created_at ASC`
-    ).all(dateName);
+    ).all(...params);
     return this.rowsToTasks(rows);
   }
-  listContinuouslyMonitoredTaskIds(dateName) {
+  listContinuouslyMonitoredTaskIds(groupKey) {
+    const params = [];
+    const groupCondition = groupKey ? "AND COALESCE(df.group_key, df.date_value) = ?" : "";
+    if (groupKey) params.push(groupKey);
     const rows = getDb().prepare(
       `SELECT t.id
        FROM tasks t
        INNER JOIN day_folders df ON df.id = t.day_folder_id
        WHERE t.source_type = 'local'
          AND t.day_folder_id IS NOT NULL
-         AND df.date_value = ?
+         ${groupCondition}
          AND t.status NOT IN ('skipped', 'paused', 'completed')
        ORDER BY t.created_at ASC`
-    ).all(dateName);
+    ).all(...params);
     return rows.map((row) => row.id);
   }
   listRunnable(now = (/* @__PURE__ */ new Date()).toISOString(), limit) {
@@ -1511,8 +1601,9 @@ class TaskRepo {
       `INSERT INTO tasks (
         id, folder_path, folder_name, status, oss_prefix, upload_target_mode,
         day_folder_id, upload_relative_path, source_type, source_machine_id,
-        profile_id, profile_name, profile_snapshot_json, created_at, updated_at
-      ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        profile_id, profile_name, profile_snapshot_json, group_variables_json,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       normalizedPath,
@@ -1526,6 +1617,7 @@ class TaskRepo {
       params.profileId || null,
       params.profileName || null,
       params.profileSnapshot ? JSON.stringify(params.profileSnapshot) : null,
+      JSON.stringify(params.groupVariables || {}),
       now,
       now
     );
@@ -1553,6 +1645,13 @@ class TaskRepo {
        SET day_folder_id = ?, upload_relative_path = ?, updated_at = ?
        WHERE id = ?`
     ).run(dayFolderId, uploadRelativePath, (/* @__PURE__ */ new Date()).toISOString(), id);
+  }
+  updateGroupVariables(id, variables) {
+    getDb().prepare(
+      `UPDATE tasks
+       SET group_variables_json = ?, updated_at = ?
+       WHERE id = ?`
+    ).run(JSON.stringify(variables), (/* @__PURE__ */ new Date()).toISOString(), id);
   }
   updateUploadRelativePath(id, uploadRelativePath) {
     getDb().prepare(
@@ -2309,10 +2408,10 @@ class TaskRepo {
     return this.rowsToTasks(rows);
   }
 }
-let instance$m = null;
+let instance$n = null;
 function getTaskRepo() {
-  if (!instance$m) instance$m = new TaskRepo();
-  return instance$m;
+  if (!instance$n) instance$n = new TaskRepo();
+  return instance$n;
 }
 const GENERIC_CONVERTER_EXTENSION_ID = "generic-converter";
 const DEFAULT_GENERIC_CONVERTER_CONFIG = {
@@ -2417,18 +2516,26 @@ function mergeWorkDirNamePattern(currentPattern, outputBatchNamePattern) {
 }
 function applyGenericConverterScanHandoff(profile, config) {
   if (!config.enabled || !config.outputRoot) return profile;
-  const providers = providersForMode(profile.targetMode);
+  const providers = providersForProfile(profile);
   const providerDirectories = {
     aliyun: [...profile.scan.providerDirectories.aliyun || []],
     tencent: [...profile.scan.providerDirectories.tencent || []]
   };
+  const sourceRoots = profile.source?.roots?.length ? [...profile.source.roots] : profile.source?.root ? [profile.source.root] : [];
   for (const provider of providers) {
     if (!providerDirectories[provider].includes(config.outputRoot)) {
       providerDirectories[provider].push(config.outputRoot);
     }
   }
+  if (!sourceRoots.includes(config.outputRoot)) {
+    sourceRoots.push(config.outputRoot);
+  }
   return {
     ...profile,
+    source: {
+      root: sourceRoots[0] || "",
+      roots: sourceRoots
+    },
     scan: {
       ...profile.scan,
       providerDirectories,
@@ -2436,6 +2543,14 @@ function applyGenericConverterScanHandoff(profile, config) {
         profile.scan.workDirNamePattern,
         config.outputBatchNamePattern
       )
+    },
+    discovery: {
+      ...profile.discovery,
+      taskRegex: mergeWorkDirNamePattern(
+        profile.discovery.taskRegex || profile.scan.workDirNamePattern,
+        config.outputBatchNamePattern
+      ),
+      taskPattern: profile.discovery.taskRegex ? void 0 : profile.discovery.taskPattern
     }
   };
 }
@@ -2464,10 +2579,11 @@ const BUILTIN_UPLOAD_PIPELINES = [
   },
   {
     id: UPLOAD_PIPELINE_IDS.SANY_MODULE1_UPLOAD,
-    name: "SANY Module1 数据采集上传",
+    name: "Legacy SANY Module1 数据采集上传",
     version: "1.0.0",
     category: "pipeline",
-    description: "复制到 staging 后按 SANY Module1 规则清理、分类、生成 manifest 和对象 Key。"
+    description: "Legacy: 复制到 staging 后按 SANY Module1 规则清理、分类、生成 manifest 和对象 Key。",
+    legacy: true
   }
 ];
 const BUILTIN_EXTENSIONS = [
@@ -2601,14 +2717,40 @@ const DEFAULT_SETTINGS = {
   profiles: [
     {
       id: DEFAULT_UPLOAD_PROFILE_ID,
-      name: "默认项目",
+      name: "默认归档",
       enabled: true,
+      source: {
+        root: "",
+        roots: []
+      },
+      destinations: [
+        {
+          connectionId: "aliyun",
+          required: true
+        }
+      ],
+      pathMapping: {
+        mode: "keep-relative"
+      },
+      discovery: {
+        groupPattern: "{date:yyyy-MM-dd}",
+        taskPattern: "{session:HH-mm-ss}",
+        recursive: false
+      },
+      completion: {
+        mode: "rollover"
+      },
+      cleanup: {
+        enabled: false,
+        retentionDays: 7,
+        onlyAfterSealed: true
+      },
       targetMode: "aliyun",
       filter: {
         whitelist: [],
         blacklist: [],
         regex: [],
-        suffixes: [".jpg", ".jpeg", ".png", ".bmp", ".csv", ".json", ".log", ".txt"]
+        suffixes: []
       },
       scan: {
         providerDirectories: {
@@ -2640,7 +2782,7 @@ const DEFAULT_SETTINGS = {
     whitelist: [],
     blacklist: [],
     regex: [],
-    suffixes: [".jpg", ".jpeg", ".png", ".bmp", ".csv", ".json", ".log", ".txt"]
+    suffixes: []
   },
   webhook: {
     url: "",
@@ -2662,7 +2804,8 @@ const DEFAULT_SETTINGS = {
   },
   cleanup: {
     enabled: false,
-    retentionDays: 7
+    retentionDays: 7,
+    onlyAfterSealed: true
   }
 };
 const MARKER_FILES = {
@@ -2691,6 +2834,16 @@ function normalizeScanDirectories(directories) {
   return Array.from(
     new Set(
       directories.map(normalizeScanDirectory).filter(Boolean)
+    )
+  );
+}
+function normalizeSourceDirectory(directory) {
+  return directory.trim().replace(/[\\/]+$/, "");
+}
+function normalizeSourceDirectories(directories) {
+  return Array.from(
+    new Set(
+      directories.map(normalizeSourceDirectory).filter(Boolean)
     )
   );
 }
@@ -2729,29 +2882,26 @@ function getActiveProfileScanRoots(profiles) {
   const roots = /* @__PURE__ */ new Map();
   for (const profile of profiles) {
     if (!profile.enabled) continue;
-    const activeProviders = new Set(providersForMode(profile.targetMode));
-    const providerDirectories = normalizeProviderDirectories(
-      profile.scan.providerDirectories
-    );
-    for (const provider of CLOUD_PROVIDERS) {
-      if (!activeProviders.has(provider)) continue;
-      for (const directory of providerDirectories[provider]) {
-        const key = scanDirectoryKey(directory);
-        const current = roots.get(key);
-        if (current) {
-          if (current.profileId === profile.id && !current.providers.includes(provider)) {
-            current.providers.push(provider);
-            current.providers = providersForMode(modeForProviders(current.providers));
-          }
-          continue;
+    const activeProviders = providersForProfile(profile);
+    const sourceRoots = getProfileSourceDirectoriesForProviders(profile, activeProviders);
+    for (const directory of sourceRoots) {
+      const key = scanDirectoryKey(directory);
+      const current = roots.get(key);
+      if (current) {
+        if (current.profileId === profile.id) {
+          current.providers = providersForMode(modeForProviders([
+            ...current.providers,
+            ...activeProviders
+          ]));
         }
-        roots.set(key, {
-          directory,
-          providers: [provider],
-          profileId: profile.id,
-          profileName: profile.name
-        });
+        continue;
       }
+      roots.set(key, {
+        directory,
+        providers: activeProviders,
+        profileId: profile.id,
+        profileName: profile.name
+      });
     }
   }
   return Array.from(roots.values());
@@ -2770,8 +2920,152 @@ function getProfileWatchedDirectoriesByProvider(profiles) {
 function scanDirectoryKey(directory) {
   return normalizeScanDirectory(directory).replace(/\\/g, "/");
 }
+function getProfileSourceDirectories(profile) {
+  const sourceRoots = normalizeSourceDirectories(
+    profile.source?.roots?.length ? profile.source.roots : profile.source?.root ? [profile.source.root] : []
+  );
+  if (sourceRoots.length > 0) return sourceRoots;
+  const providerDirectories = normalizeProviderDirectories(
+    profile.scan?.providerDirectories
+  );
+  return normalizeScanDirectories([
+    ...providerDirectories.aliyun,
+    ...providerDirectories.tencent
+  ]);
+}
+function getProfileSourceDirectoriesForProviders(profile, activeProviders) {
+  const sourceRoots = normalizeSourceDirectories(
+    profile.source?.roots?.length ? profile.source.roots : profile.source?.root ? [profile.source.root] : []
+  );
+  if (sourceRoots.length > 0) return sourceRoots;
+  const providerDirectories = normalizeProviderDirectories(
+    profile.scan?.providerDirectories
+  );
+  return normalizeSourceDirectories(
+    activeProviders.flatMap((provider) => providerDirectories[provider])
+  );
+}
+const TEMPLATE_TOKEN_PATTERN = /\{([A-Za-z_][A-Za-z0-9_]*)(?::([^}]+))?\}/g;
+const FORMAT_TOKENS = [
+  ["yyyy", "\\d{4}"],
+  ["yy", "\\d{2}"],
+  ["MM", "\\d{2}"],
+  ["dd", "\\d{2}"],
+  ["HH", "\\d{2}"],
+  ["mm", "\\d{2}"],
+  ["ss", "\\d{2}"]
+];
+function compileDiscoveryPattern(pattern) {
+  const source = pattern.trim().replace(/\\/g, "/");
+  if (!source) throw new Error("Discovery pattern 不能为空");
+  let body = "";
+  let cursor = 0;
+  for (const match of source.matchAll(TEMPLATE_TOKEN_PATTERN)) {
+    body += escapeRegex(source.slice(cursor, match.index));
+    const name = match[1];
+    const format = match[2];
+    body += `(?<${name}>${format ? compileFormat(format) : "[^/]+"})`;
+    cursor = (match.index || 0) + match[0].length;
+  }
+  body += escapeRegex(source.slice(cursor));
+  return new RegExp(`^${body}$`);
+}
+function matchDiscoveryPattern(pattern, value) {
+  return matchDiscoveryRegex(compileDiscoveryPattern(pattern), value);
+}
+function matchDiscoveryRegex(regex, value) {
+  const compiled = typeof regex === "string" ? new RegExp(regex) : regex;
+  const match = compiled.exec(normalizeDiscoveryPath(value));
+  if (!match) return null;
+  return { variables: normalizeGroups(match.groups || {}) };
+}
+function matchDiscoveryRule(config, kind, value) {
+  const regex = kind === "group" ? config.groupRegex : config.taskRegex;
+  if (regex?.trim()) return matchDiscoveryRegex(regex.trim(), value);
+  const pattern = kind === "group" ? config.groupPattern : config.taskPattern;
+  if (pattern?.trim()) return matchDiscoveryPattern(pattern.trim(), value);
+  return { variables: {} };
+}
+function extractDiscoveryVariables(config, sourceRoot, taskPath) {
+  const relativePath = relativeDiscoveryPath(taskPath, sourceRoot);
+  if (!relativePath) return {};
+  const segments = relativePath.split("/").filter(Boolean);
+  const variables = {};
+  const groupDepth = config.groupPattern ? discoveryPatternDepth(config.groupPattern) : config.groupRegex ? 1 : 0;
+  if ((config.groupPattern || config.groupRegex) && groupDepth > 0) {
+    const groupPath = segments.slice(0, groupDepth).join("/");
+    const groupMatch = matchDiscoveryRule(config, "group", groupPath);
+    if (!groupMatch) return {};
+    Object.assign(variables, groupMatch.variables);
+  }
+  const taskPathSegments = groupDepth > 0 ? segments.slice(groupDepth) : segments;
+  if ((config.taskPattern || config.taskRegex) && taskPathSegments.length > 0) {
+    const taskMatch = matchDiscoveryRule(config, "task", taskPathSegments.join("/"));
+    if (!taskMatch) return variables;
+    Object.assign(variables, taskMatch.variables);
+  }
+  return variables;
+}
+function discoveryPatternDepth(pattern) {
+  const normalized = pattern?.trim().replace(/\\/g, "/") || "";
+  if (!normalized) return 0;
+  return normalized.split("/").filter(Boolean).length;
+}
+function relativeDiscoveryPath(path2, basePath) {
+  const pathSegments2 = normalizeDiscoveryPath(path2).split("/").filter(Boolean);
+  const baseSegments = normalizeDiscoveryPath(basePath).split("/").filter(Boolean);
+  let index = 0;
+  while (index < pathSegments2.length && index < baseSegments.length && segmentEquals$1(pathSegments2[index], baseSegments[index])) {
+    index++;
+  }
+  if (index === baseSegments.length && index < pathSegments2.length) {
+    return pathSegments2.slice(index).join("/");
+  }
+  return "";
+}
+function segmentEquals$1(a, b) {
+  if (a.endsWith(":") || b.endsWith(":")) return a.toLowerCase() === b.toLowerCase();
+  return a === b;
+}
+function normalizeDiscoveryPath(path2) {
+  return path2.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+}
+function compileFormat(format) {
+  let body = "";
+  let cursor = 0;
+  while (cursor < format.length) {
+    const token = FORMAT_TOKENS.find(([name]) => format.startsWith(name, cursor));
+    if (token) {
+      body += token[1];
+      cursor += token[0].length;
+      continue;
+    }
+    body += escapeRegex(format[cursor]);
+    cursor++;
+  }
+  return body;
+}
+function normalizeGroups(groups) {
+  return Object.fromEntries(
+    Object.entries(groups).filter((entry) => typeof entry[1] === "string")
+  );
+}
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 const DEFAULT_OBJECT_KEY_TEMPLATE = "{relativePath}";
-const TEMPLATE_VARIABLES = /* @__PURE__ */ new Set([
+const DEFAULT_DISCOVERY_CONFIG = {
+  groupPattern: "{date:yyyy-MM-dd}",
+  taskPattern: "{session:HH-mm-ss}",
+  recursive: false
+};
+const DEFAULT_COMPLETION_POLICY = { mode: "rollover" };
+const DEFAULT_CLEANUP_POLICY = {
+  enabled: false,
+  retentionDays: 7,
+  onlyAfterSealed: true
+};
+const BUILTIN_TEMPLATE_VARIABLES = /* @__PURE__ */ new Set([
   "profile",
   "provider",
   "date",
@@ -2780,6 +3074,7 @@ const TEMPLATE_VARIABLES = /* @__PURE__ */ new Set([
   "MM",
   "dd",
   "workDir",
+  "session",
   "HH",
   "mm",
   "ss",
@@ -2818,17 +3113,33 @@ function getProfileById(settings, profileId) {
   const normalized = normalizeProfiles(settings);
   return normalized.profiles.find((profile) => profile.id === profileId) || normalized.profiles.find((profile) => profile.id === normalized.activeProfileId) || normalized.profiles[0];
 }
+function extractProfilePathVariables(profile, sourcePath, fallbackBasePath) {
+  const roots = getProfileSourceDirectories(profile).sort((a, b) => b.length - a.length);
+  for (const root of roots) {
+    if (!isPathUnderRoot(sourcePath, root)) continue;
+    const variables = extractDiscoveryVariables(profile.discovery, root, sourcePath);
+    if (Object.keys(variables).length > 0) return variables;
+  }
+  return fallbackBasePath ? extractDiscoveryVariables(profile.discovery, fallbackBasePath, sourcePath) : {};
+}
 function resolveProfileUploadSnapshot(profile, context, requestedProviders) {
-  const providers = requestedProviders?.length ? requestedProviders : providersForMode(profile.targetMode);
+  const providers = requestedProviders?.length ? requestedProviders : providersForProfile(profile);
   const uploadRelativePaths = {};
   const pathModes = {};
   const objectKeyTemplates = {};
+  const legacyProviders = {
+    aliyun: normalizeProfileProviderConfig(profile.providers?.aliyun),
+    tencent: normalizeProfileProviderConfig(profile.providers?.tencent)
+  };
   const prefixes = {
-    aliyun: profile.providers.aliyun.prefix,
-    tencent: profile.providers.tencent.prefix
+    aliyun: legacyProviders.aliyun.prefix,
+    tencent: legacyProviders.tencent.prefix
   };
   for (const provider of providers) {
-    const providerConfig = profile.providers[provider];
+    const providerConfig = legacyUploadPathConfigForSnapshot(
+      profile.pathMapping,
+      legacyProviders[provider]
+    );
     const normalized = normalizeUploadPathConfig(
       providerConfig
     );
@@ -2861,7 +3172,7 @@ function renderObjectKey(destination, context) {
     );
   }
   const template = destination.objectKeyTemplate || "";
-  const templateErrors = validateObjectKeyTemplate(template);
+  const templateErrors = validateObjectKeyTemplate(template, context.variables);
   if (templateErrors.length > 0) {
     throw new Error(templateErrors.join("；"));
   }
@@ -2884,18 +3195,23 @@ function buildObjectKeyVariables(provider, context) {
   const stem = dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName;
   const sourceSegments = pathSegments(context.sourcePath);
   const folderName = context.folderName || sourceSegments.at(-1) || "";
-  const dateParts = parseDateParts(context.dateName || "");
-  const timeParts = parseTimeParts(context.workDirName || "");
+  const discoveryVariables = context.variables || {};
+  const legacyDate = discoveryVariables.date || context.dateName || "";
+  const legacyWorkDir = discoveryVariables.workDir || discoveryVariables.session || context.workDirName || "";
+  const dateParts = parseDateParts(legacyDate);
+  const timeParts = parseTimeParts(legacyWorkDir);
   const sourceRelativePath = context.basePath ? relativePathFromBase(context.sourcePath, context.basePath) : folderName;
   return {
+    ...discoveryVariables,
     profile: context.profileName || "",
     provider,
-    date: context.dateName || "",
+    date: legacyDate,
     yy: dateParts.yy,
     yyyy: dateParts.yyyy,
     MM: dateParts.MM,
     dd: dateParts.dd,
-    workDir: context.workDirName || folderName,
+    workDir: legacyWorkDir || folderName,
+    session: discoveryVariables.session || legacyWorkDir,
     HH: timeParts.HH,
     mm: timeParts.mm,
     ss: timeParts.ss,
@@ -2910,14 +3226,14 @@ function buildObjectKeyVariables(provider, context) {
     ext
   };
 }
-function validateObjectKeyTemplate(template) {
+function validateObjectKeyTemplate(template, variables = {}) {
   const errors = [];
   const trimmed = template.trim();
   if (!trimmed) errors.push("对象 Key 模板不能为空");
   if (isAbsolutePath(trimmed)) errors.push("对象 Key 模板不能使用绝对路径");
   const unknownVariables = Array.from(
     new Set(
-      [...trimmed.matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((match) => match[1]).filter((name) => !TEMPLATE_VARIABLES.has(name))
+      [...trimmed.matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((match) => match[1]).filter((name) => !BUILTIN_TEMPLATE_VARIABLES.has(name) && !(name in variables))
     )
   );
   if (unknownVariables.length > 0) {
@@ -2950,30 +3266,38 @@ function createDefaultProfileFromSettings(settings) {
     },
     targetMode
   ).providerDirectories;
+  const providers = {
+    aliyun: normalizeProfileProviderConfig({
+      prefix: settings.oss?.prefix || "",
+      pathMode: settings.oss?.pathMode,
+      pathSegmentCount: settings.oss?.pathSegmentCount,
+      objectKeyTemplate: DEFAULT_OBJECT_KEY_TEMPLATE
+    }),
+    tencent: normalizeProfileProviderConfig({
+      prefix: settings.tencentS3?.prefix || "",
+      pathMode: settings.tencentS3?.pathMode,
+      pathSegmentCount: settings.tencentS3?.pathSegmentCount,
+      objectKeyTemplate: DEFAULT_OBJECT_KEY_TEMPLATE
+    })
+  };
+  const activeProviders = providersForMode(targetMode);
   return {
     id: DEFAULT_UPLOAD_PROFILE_ID,
-    name: "默认项目",
+    name: "默认归档",
     enabled: true,
+    source: sourceFromProviderDirectories(providerDirectories),
+    destinations: destinationsForProviders(activeProviders),
+    pathMapping: pathMappingFromLegacyProviderConfig(providers[activeProviders[0]]),
+    discovery: discoveryFromLegacyScan(scan.workDirNamePattern),
+    completion: DEFAULT_COMPLETION_POLICY,
+    cleanup: normalizeCleanupPolicy(settings.cleanup, DEFAULT_CLEANUP_POLICY),
     targetMode,
     filter,
     scan: {
       providerDirectories,
       workDirNamePattern: scan.workDirNamePattern || DEFAULT_WORK_DIR_NAME_PATTERN
     },
-    providers: {
-      aliyun: normalizeProfileProviderConfig({
-        prefix: settings.oss?.prefix || "",
-        pathMode: settings.oss?.pathMode,
-        pathSegmentCount: settings.oss?.pathSegmentCount,
-        objectKeyTemplate: DEFAULT_OBJECT_KEY_TEMPLATE
-      }),
-      tencent: normalizeProfileProviderConfig({
-        prefix: settings.tencentS3?.prefix || "",
-        pathMode: settings.tencentS3?.pathMode,
-        pathSegmentCount: settings.tencentS3?.pathSegmentCount,
-        objectKeyTemplate: DEFAULT_OBJECT_KEY_TEMPLATE
-      })
-    },
+    providers,
     uploadPipeline: DEFAULT_PROFILE_UPLOAD_PIPELINE,
     extensions: buildDefaultExtensionsFromSettings(settings)
   };
@@ -2994,28 +3318,55 @@ function normalizeProfile(rawProfile, fallback) {
     raw.plugins,
     fallback.extensions
   );
+  const targetMode = normalizeTargetMode(raw.targetMode, fallback.targetMode);
+  const providerDirectories = normalizeProviderDirectories(
+    isRecord$1(rawScan.providerDirectories) ? rawScan.providerDirectories : fallback.scan.providerDirectories
+  );
+  const scan = {
+    providerDirectories,
+    workDirNamePattern: typeof rawScan.workDirNamePattern === "string" && rawScan.workDirNamePattern.trim() ? rawScan.workDirNamePattern.trim() : fallback.scan.workDirNamePattern
+  };
+  const providers = {
+    aliyun: normalizeProfileProviderConfig(
+      isRecord$1(rawProviders.aliyun) ? rawProviders.aliyun : {},
+      fallback.providers.aliyun
+    ),
+    tencent: normalizeProfileProviderConfig(
+      isRecord$1(rawProviders.tencent) ? rawProviders.tencent : {},
+      fallback.providers.tencent
+    )
+  };
+  const source = normalizeUploadSourceConfig(
+    raw.source,
+    sourceFromProviderDirectories(providerDirectories, fallback.source)
+  );
+  const destinationFallback = destinationsForProviders(providersForMode(targetMode));
+  const rawDestinationRefs = parseUploadDestinationRefs(raw.destinations);
+  const destinations = rawDestinationRefs.length > 0 && !(targetMode !== fallback.targetMode && destinationsEqual(rawDestinationRefs, fallback.destinations)) ? rawDestinationRefs : destinationFallback;
+  const activeProviders = providersForDestinations(destinations);
+  const canonicalTargetMode = modeForProviders(
+    activeProviders.length > 0 ? activeProviders : providersForMode(targetMode)
+  );
+  const legacyPathMapping = pathMappingFromLegacyProviderConfig(
+    providers[providersForMode(canonicalTargetMode)[0]]
+  );
+  const rawPathMapping = pathMappingEquals(normalizePathMappingConfig(raw.pathMapping, fallback.pathMapping), fallback.pathMapping) && !pathMappingEquals(legacyPathMapping, fallback.pathMapping) ? void 0 : raw.pathMapping;
+  const pathMapping = normalizePathMappingConfig(rawPathMapping, legacyPathMapping);
   const profile = {
     id,
     name,
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : true,
-    targetMode: normalizeTargetMode(raw.targetMode, fallback.targetMode),
+    source,
+    destinations,
+    pathMapping,
+    discovery: normalizeDiscoveryConfig$1(raw.discovery, discoveryFromLegacyScan(scan.workDirNamePattern)),
+    completion: normalizeCompletionPolicy(raw.completion, fallback.completion),
+    cleanup: normalizeCleanupPolicy(raw.cleanup, fallback.cleanup),
+    cloudConnections: normalizeCloudConnections(raw.cloudConnections, fallback.cloudConnections),
+    targetMode: canonicalTargetMode,
     filter: normalizeFilter(isRecord$1(raw.filter) ? raw.filter : fallback.filter),
-    scan: {
-      providerDirectories: normalizeProviderDirectories(
-        isRecord$1(rawScan.providerDirectories) ? rawScan.providerDirectories : fallback.scan.providerDirectories
-      ),
-      workDirNamePattern: typeof rawScan.workDirNamePattern === "string" && rawScan.workDirNamePattern.trim() ? rawScan.workDirNamePattern.trim() : fallback.scan.workDirNamePattern
-    },
-    providers: {
-      aliyun: normalizeProfileProviderConfig(
-        isRecord$1(rawProviders.aliyun) ? rawProviders.aliyun : {},
-        fallback.providers.aliyun
-      ),
-      tencent: normalizeProfileProviderConfig(
-        isRecord$1(rawProviders.tencent) ? rawProviders.tencent : {},
-        fallback.providers.tencent
-      )
-    },
+    scan,
+    providers,
     uploadPipeline,
     extensions
   };
@@ -3168,6 +3519,184 @@ function normalizeProfileProviderConfig(rawConfig, fallback) {
     objectKeyTemplate: typeof raw.objectKeyTemplate === "string" ? raw.objectKeyTemplate : fallback?.objectKeyTemplate || DEFAULT_OBJECT_KEY_TEMPLATE
   };
 }
+function normalizeUploadSourceConfig(rawSource, fallback) {
+  const raw = isRecord$1(rawSource) ? rawSource : {};
+  const roots = normalizeSourceDirectories(
+    Array.isArray(raw.roots) ? raw.roots.map((item) => String(item)) : typeof raw.root === "string" ? [raw.root] : fallback.roots
+  );
+  const sourceRoots = roots.length > 0 ? roots : normalizeSourceDirectories([fallback.root]);
+  return {
+    root: typeof raw.root === "string" && raw.root.trim() ? raw.root.trim() : sourceRoots[0] || fallback.root || "",
+    roots: sourceRoots
+  };
+}
+function sourceFromProviderDirectories(providerDirectories, fallback) {
+  const roots = normalizeSourceDirectories([
+    ...providerDirectories.aliyun,
+    ...providerDirectories.tencent
+  ]);
+  const fallbackRoots = fallback?.roots?.length ? fallback.roots : fallback?.root ? [fallback.root] : [];
+  const sourceRoots = roots.length > 0 ? roots : normalizeStringArray(fallbackRoots);
+  return {
+    root: sourceRoots[0] || "",
+    roots: sourceRoots
+  };
+}
+function parseUploadDestinationRefs(rawDestinations) {
+  if (!Array.isArray(rawDestinations)) return [];
+  return rawDestinations.map((item) => {
+    if (!isRecord$1(item) || typeof item.connectionId !== "string") return null;
+    const connectionId = item.connectionId.trim();
+    if (!connectionId) return null;
+    return {
+      connectionId,
+      required: typeof item.required === "boolean" ? item.required : true
+    };
+  }).filter((item) => Boolean(item));
+}
+function destinationsEqual(a, b) {
+  if (a.length !== b.length) return false;
+  return a.every(
+    (destination, index) => destination.connectionId === b[index]?.connectionId && (destination.required ?? true) === (b[index]?.required ?? true)
+  );
+}
+function normalizeCloudConnections(rawConnections, fallback) {
+  if (!Array.isArray(rawConnections)) return fallback;
+  const connections = rawConnections.map((item) => {
+    if (!isRecord$1(item)) return null;
+    if (typeof item.id !== "string" || !item.id.trim()) return null;
+    if (typeof item.name !== "string" || !item.name.trim()) return null;
+    if (item.type !== "aliyun-oss" && item.type !== "s3") return null;
+    return {
+      id: item.id.trim(),
+      name: item.name.trim(),
+      type: item.type,
+      provider: item.provider === "aliyun" || item.provider === "tencent" ? item.provider : void 0,
+      config: isRecord$1(item.config) ? item.config : {}
+    };
+  }).filter((item) => Boolean(item));
+  return connections.length > 0 ? connections : fallback;
+}
+function normalizePathMappingConfig(rawMapping, fallback) {
+  const raw = isRecord$1(rawMapping) ? rawMapping : {};
+  const rawMode = typeof raw.mode === "string" ? raw.mode : fallback.mode;
+  const mode = rawMode === "flatten" || rawMode === "template" || rawMode === "keep-relative" ? rawMode : fallback.mode;
+  const template = typeof raw.template === "string" ? raw.template : fallback.template;
+  return mode === "template" ? { mode, template: template || DEFAULT_OBJECT_KEY_TEMPLATE } : { mode };
+}
+function normalizeDiscoveryConfig$1(rawDiscovery, fallback) {
+  const raw = isRecord$1(rawDiscovery) ? rawDiscovery : {};
+  return {
+    groupPattern: normalizeOptionalString$1(raw.groupPattern, fallback.groupPattern),
+    taskPattern: normalizeOptionalString$1(raw.taskPattern, fallback.taskPattern),
+    groupRegex: normalizeOptionalString$1(raw.groupRegex, fallback.groupRegex),
+    taskRegex: normalizeOptionalString$1(raw.taskRegex, fallback.taskRegex),
+    recursive: typeof raw.recursive === "boolean" ? raw.recursive : fallback.recursive ?? false
+  };
+}
+function discoveryFromLegacyScan(workDirNamePattern) {
+  const normalizedWorkDirPattern = workDirNamePattern?.trim();
+  if (normalizedWorkDirPattern && normalizedWorkDirPattern !== DEFAULT_WORK_DIR_NAME_PATTERN) {
+    return {
+      groupPattern: "{date:yyyy-MM-dd}",
+      taskRegex: normalizedWorkDirPattern,
+      recursive: false
+    };
+  }
+  return { ...DEFAULT_DISCOVERY_CONFIG };
+}
+function normalizeCompletionPolicy(rawCompletion, fallback) {
+  const raw = isRecord$1(rawCompletion) ? rawCompletion : {};
+  if (raw.mode === "manual") return { mode: "manual" };
+  if (raw.mode === "none") return { mode: "none" };
+  if (raw.mode === "rollover") return { mode: "rollover" };
+  if (raw.mode === "marker-file") {
+    return {
+      mode: "marker-file",
+      markerFile: typeof raw.markerFile === "string" && raw.markerFile.trim() ? raw.markerFile.trim() : "COMPLETE"
+    };
+  }
+  if (raw.mode === "inactivity") {
+    const idleMinutes = Number(raw.idleMinutes);
+    return {
+      mode: "inactivity",
+      idleMinutes: Number.isFinite(idleMinutes) ? Math.max(0, Math.floor(idleMinutes)) : 60
+    };
+  }
+  return fallback;
+}
+function normalizeCleanupPolicy(rawCleanup, fallback) {
+  const raw = isRecord$1(rawCleanup) ? rawCleanup : {};
+  const retentionDays = Number(raw.retentionDays);
+  return {
+    enabled: typeof raw.enabled === "boolean" ? raw.enabled : fallback.enabled,
+    retentionDays: Number.isFinite(retentionDays) ? Math.max(0, Math.floor(retentionDays)) : fallback.retentionDays,
+    onlyAfterSealed: typeof raw.onlyAfterSealed === "boolean" ? raw.onlyAfterSealed : fallback.onlyAfterSealed
+  };
+}
+function pathMappingFromLegacyProviderConfig(provider) {
+  if (!provider) return { mode: "keep-relative" };
+  if (provider.pathMode === "template") {
+    return {
+      mode: "template",
+      template: provider.objectKeyTemplate || DEFAULT_OBJECT_KEY_TEMPLATE
+    };
+  }
+  if (provider.pathMode === "target-root") return { mode: "keep-relative" };
+  if (provider.pathMode === "date-workdir") {
+    return {
+      mode: "template",
+      template: "{date}/{session}/{relativePath}"
+    };
+  }
+  if (provider.pathMode === "keep-source") {
+    return {
+      mode: "template",
+      template: "{sourceRelativePath}/{relativePath}"
+    };
+  }
+  if (provider.pathMode === "last-segments") {
+    const variable = `sourceLast${Math.max(1, Math.min(3, provider.pathSegmentCount || 1))}`;
+    return {
+      mode: "template",
+      template: `{${variable}}/{relativePath}`
+    };
+  }
+  return {
+    mode: "keep-relative"
+  };
+}
+function legacyUploadPathConfigForSnapshot(pathMapping, legacyProvider) {
+  if (!pathMapping) return legacyProvider;
+  if (pathMapping.mode === "keep-relative" && legacyProvider.pathMode !== "target-root") {
+    return legacyProvider;
+  }
+  return pathMappingToLegacyProviderConfig(pathMapping);
+}
+function pathMappingToLegacyProviderConfig(pathMapping) {
+  if (pathMapping.mode === "flatten") {
+    return {
+      pathMode: "template",
+      pathSegmentCount: DEFAULT_UPLOAD_PATH_SEGMENT_COUNT,
+      objectKeyTemplate: "{filename}"
+    };
+  }
+  if (pathMapping.mode === "template") {
+    return {
+      pathMode: "template",
+      pathSegmentCount: DEFAULT_UPLOAD_PATH_SEGMENT_COUNT,
+      objectKeyTemplate: pathMapping.template || DEFAULT_OBJECT_KEY_TEMPLATE
+    };
+  }
+  return {
+    pathMode: "target-root",
+    pathSegmentCount: DEFAULT_UPLOAD_PATH_SEGMENT_COUNT,
+    objectKeyTemplate: DEFAULT_OBJECT_KEY_TEMPLATE
+  };
+}
+function pathMappingEquals(a, b) {
+  return a.mode === b.mode && (a.template || "") === (b.template || "");
+}
 function normalizeFilter(raw) {
   const defaultFilter = DEFAULT_SETTINGS.filter;
   return {
@@ -3184,9 +3713,14 @@ function normalizeSuffixes$1(value) {
   const suffixes = normalizeStringArray(value).map(
     (suffix) => suffix.startsWith(".") ? suffix.toLowerCase() : `.${suffix.toLowerCase()}`
   );
-  const unique = Array.from(new Set(suffixes));
-  if (!unique.includes(".csv")) unique.push(".csv");
-  return unique;
+  return Array.from(new Set(suffixes));
+}
+function normalizeOptionalString$1(value, fallback) {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed) return trimmed;
+  }
+  return fallback;
 }
 function normalizeTargetMode(value, fallback) {
   return value === "aliyun" || value === "tencent" || value === "both" ? value : fallback;
@@ -3224,6 +3758,10 @@ function normalizeObjectPath(path2) {
 function pathSegments(path2) {
   return path2.replace(/\\/g, "/").split("/").map((part) => part.trim()).filter((part) => part.length > 0 && part !== ".");
 }
+function segmentEquals(a, b) {
+  if (a.endsWith(":") || b.endsWith(":")) return a.toLowerCase() === b.toLowerCase();
+  return a === b;
+}
 function relativePathFromBase(sourcePath, basePath) {
   const source = pathSegments(sourcePath);
   const base = pathSegments(basePath);
@@ -3236,17 +3774,63 @@ function relativePathFromBase(sourcePath, basePath) {
   }
   return source.at(-1) || "";
 }
+function isPathUnderRoot(sourcePath, rootPath) {
+  const source = pathSegments(sourcePath);
+  const root = pathSegments(rootPath);
+  if (root.length === 0 || source.length < root.length) return false;
+  return root.every(
+    (segment, index) => source[index] && segmentEquals(source[index], segment)
+  );
+}
 function isAbsolutePath(path2) {
   return path2.startsWith("/") || path2.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(path2);
 }
 function isRecord$1(value) {
   return typeof value === "object" && value !== null;
 }
+const SAFE_STORAGE_PREFIX = "safe-storage:v1:";
+class CredentialStore {
+  encryptSecret(secret) {
+    if (!secret || this.isEncryptedSecret(secret)) return secret;
+    if (!electron.safeStorage?.isEncryptionAvailable?.()) return secret;
+    return `${SAFE_STORAGE_PREFIX}${electron.safeStorage.encryptString(secret).toString("base64")}`;
+  }
+  decryptSecret(secret) {
+    if (!this.isEncryptedSecret(secret)) return secret;
+    if (!electron.safeStorage?.isEncryptionAvailable?.()) return secret;
+    try {
+      const payload = secret.slice(SAFE_STORAGE_PREFIX.length);
+      return electron.safeStorage.decryptString(Buffer.from(payload, "base64"));
+    } catch {
+      return secret;
+    }
+  }
+  encryptConfig(config) {
+    if (typeof config.accessKeySecret !== "string") return config;
+    return {
+      ...config,
+      accessKeySecret: this.encryptSecret(config.accessKeySecret)
+    };
+  }
+  decryptConfig(config) {
+    if (typeof config.accessKeySecret !== "string") return config;
+    return {
+      ...config,
+      accessKeySecret: this.decryptSecret(config.accessKeySecret)
+    };
+  }
+  isEncryptedSecret(secret) {
+    return secret.startsWith(SAFE_STORAGE_PREFIX);
+  }
+}
+let instance$m = null;
+function getCredentialStore() {
+  if (!instance$m) instance$m = new CredentialStore();
+  return instance$m;
+}
 function normalizeSuffixes(suffixes) {
   const normalized = suffixes.map((suffix) => suffix.trim().toLowerCase()).filter(Boolean).map((suffix) => suffix.startsWith(".") ? suffix : `.${suffix}`);
-  const unique = Array.from(new Set(normalized));
-  if (!unique.includes(".csv")) unique.push(".csv");
-  return unique;
+  return Array.from(new Set(normalized));
 }
 class SettingsRepo {
   static valueCache = /* @__PURE__ */ new Map();
@@ -3292,9 +3876,10 @@ class SettingsRepo {
         }
       }
       if ((key === "oss" || key === "tencentS3") && typeof parsed === "object" && parsed !== null) {
-        return normalizeUploadPathConfig(
+        const normalized = normalizeUploadPathConfig(
           parsed
         );
+        return getCredentialStore().decryptConfig(normalized);
       }
       return parsed;
     } catch {
@@ -3327,9 +3912,10 @@ class SettingsRepo {
       };
     }
     if ((key === "oss" || key === "tencentS3") && typeof value === "object" && value !== null) {
-      persistedValue = normalizeUploadPathConfig(
+      const normalized = normalizeUploadPathConfig(
         value
       );
+      persistedValue = getCredentialStore().encryptConfig(normalized);
     }
     const serialized = typeof persistedValue === "string" ? persistedValue : JSON.stringify(persistedValue);
     db2.prepare(
@@ -3522,8 +4108,103 @@ function getHistoryRepo() {
   if (!instance$k) instance$k = new HistoryRepo();
   return instance$k;
 }
+const TERMINAL_TASK_STATUSES = /* @__PURE__ */ new Set([
+  "completed",
+  "synced",
+  "skipped"
+]);
+const PROBLEM_TASK_STATUSES = /* @__PURE__ */ new Set([
+  "failed",
+  "paused"
+]);
+const ALLOWED_UPLOAD_GROUP_TRANSITIONS = {
+  open: ["open", "closing", "sealed", "error"],
+  closing: ["closing", "sealed", "error", "open"],
+  sealed: ["sealed", "cleanable", "error"],
+  cleanable: ["cleanable", "cleaned", "sealed", "error"],
+  cleaned: ["cleaned"],
+  error: ["error", "open", "closing"]
+};
+function assertUploadGroupTransition(current, next) {
+  if (!ALLOWED_UPLOAD_GROUP_TRANSITIONS[current]?.includes(next)) {
+    throw new Error(`非法 UploadGroup 状态跳转: ${current} -> ${next}`);
+  }
+}
+function deriveUploadGroupStatus(input) {
+  if (input.currentStatus === "cleaned") return "cleaned";
+  if (input.taskStatuses.some((status) => status && PROBLEM_TASK_STATUSES.has(status))) {
+    return "error";
+  }
+  if (input.currentStatus === "sealed" || input.currentStatus === "cleanable") {
+    return input.currentStatus;
+  }
+  const hasTasks = input.taskStatuses.length > 0;
+  const allTerminal = hasTasks && input.taskStatuses.every((status) => status !== null && TERMINAL_TASK_STATUSES.has(status));
+  if (input.completion.mode === "none") {
+    return allTerminal ? "sealed" : "open";
+  }
+  if (input.completion.mode === "manual") {
+    if (input.currentStatus === "closing" && allTerminal) return "sealed";
+    return input.currentStatus === "error" ? "open" : input.currentStatus;
+  }
+  if (input.completion.mode === "marker-file") {
+    if (input.currentStatus === "closing" && allTerminal) return "sealed";
+    return input.currentStatus === "error" ? "open" : input.currentStatus;
+  }
+  if (input.completion.mode === "rollover") {
+    if (input.hasNewerGroup || input.currentStatus === "closing") {
+      return allTerminal ? "sealed" : "closing";
+    }
+    return input.currentStatus === "error" ? "open" : "open";
+  }
+  if (!allTerminal) return input.currentStatus === "closing" ? "closing" : "open";
+  const lastActivityMs = input.lastActivityAt ? Date.parse(input.lastActivityAt) : Number.NaN;
+  const idleMs = Math.max(0, input.completion.idleMinutes || 0) * 6e4;
+  const nowMs = (input.now || /* @__PURE__ */ new Date()).getTime();
+  if (Number.isFinite(lastActivityMs) && nowMs - lastActivityMs >= idleMs) {
+    return "sealed";
+  }
+  return input.currentStatus === "closing" ? "closing" : "open";
+}
+function uploadGroupStatusToDayFolderStatus(status, taskStatuses) {
+  if (status === "error") return "blocked";
+  if (status === "sealed" || status === "cleanable" || status === "cleaned") {
+    return taskStatuses.some((taskStatus) => taskStatus === "skipped") ? "completed_with_skips" : "completed";
+  }
+  if (taskStatuses.some(
+    (taskStatus) => taskStatus === null || taskStatus === "pending" || taskStatus === "scanning" || taskStatus === "uploading" || taskStatus === "retrying"
+  )) {
+    return "processing";
+  }
+  return "collecting";
+}
+function mapLegacyDayFolderStatus(status) {
+  if (status === "completed" || status === "completed_with_skips") return "sealed";
+  if (status === "blocked") return "error";
+  if (status === "processing") return "closing";
+  return "open";
+}
 function normalizeFolderPath(p) {
   return path.normalize(p).replace(/[\\/]+$/, "");
+}
+function safeParseVariables(value, fallback = {}) {
+  if (typeof value !== "string" || !value) return fallback;
+  try {
+    const parsed = JSON.parse(value);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return fallback;
+    return Object.fromEntries(
+      Object.entries(parsed).map(([key, item]) => [key, String(item)])
+    );
+  } catch {
+    return fallback;
+  }
+}
+function safeParseProfile(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
 }
 function rowToRecord(row) {
   let childFolders = [];
@@ -3535,12 +4216,25 @@ function rowToRecord(row) {
   } catch {
     childFolders = [];
   }
+  const variables = safeParseVariables(row.variables_json, {
+    date: row.date_value || ""
+  });
+  const legacyStatus = row.status;
+  const uploadGroupStatus = row.upload_group_status || mapLegacyDayFolderStatus(legacyStatus);
   return {
     id: row.id,
     folderPath: row.folder_path,
     folderName: row.folder_name,
     date: row.date_value,
-    status: row.status,
+    status: legacyStatus,
+    profileId: row.profile_id || null,
+    groupKey: row.group_key || row.date_value,
+    variables,
+    uploadGroupStatus,
+    discoveredAt: row.discovered_at || row.created_at,
+    sealedAt: row.sealed_at || null,
+    cleanableAt: row.cleanable_at || null,
+    cleanedAt: row.cleaned_at || null,
     totalChildren: row.total_children,
     completedChildren: row.completed_children,
     totalFiles: row.total_files,
@@ -3555,9 +4249,12 @@ function rowToRecord(row) {
   };
 }
 class DayFolderRepo {
-  ensure(folderPath, dateName) {
+  ensure(folderPath, groupKey, variables = { date: groupKey }, profileId) {
     const existing = this.getRecordByPath(folderPath);
-    if (existing) return existing;
+    if (existing) {
+      this.updateGroupMetadata(existing.id, groupKey, variables, profileId ?? existing.profileId);
+      return this.getById(existing.id) || existing;
+    }
     const db2 = getDb();
     const id = uuid.v4();
     const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -3565,9 +4262,21 @@ class DayFolderRepo {
     db2.prepare(
       `INSERT INTO day_folders (
         id, folder_path, folder_name, date_value, status, child_folders_json,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'collecting', '[]', ?, ?)`
-    ).run(id, normalizedPath, dateName, dateName, now, now);
+        created_at, updated_at, profile_id, group_key, variables_json,
+        upload_group_status, discovered_at
+      ) VALUES (?, ?, ?, ?, 'collecting', '[]', ?, ?, ?, ?, ?, 'open', ?)`
+    ).run(
+      id,
+      normalizedPath,
+      groupKey,
+      groupKey,
+      now,
+      now,
+      profileId || null,
+      groupKey,
+      JSON.stringify(variables),
+      now
+    );
     return this.getById(id);
   }
   getById(id) {
@@ -3620,6 +4329,46 @@ class DayFolderRepo {
        WHERE id = ?`
     ).run(JSON.stringify(normalizedChildren), normalizedChildren.length, (/* @__PURE__ */ new Date()).toISOString(), id);
   }
+  updateGroupMetadata(id, groupKey, variables, profileId) {
+    getDb().prepare(
+      `UPDATE day_folders
+       SET group_key = ?, variables_json = ?, profile_id = COALESCE(?, profile_id),
+           discovered_at = COALESCE(discovered_at, created_at),
+           updated_at = ?
+       WHERE id = ?`
+    ).run(
+      groupKey,
+      JSON.stringify(variables),
+      profileId || null,
+      (/* @__PURE__ */ new Date()).toISOString(),
+      id
+    );
+  }
+  markClosing(id) {
+    this.transitionStatus(id, "closing");
+  }
+  markCleanable(id) {
+    this.transitionStatus(id, "cleanable");
+  }
+  markCleaned(id) {
+    this.transitionStatus(id, "cleaned");
+  }
+  transitionStatus(id, nextStatus) {
+    const current = this.getRecordById(id);
+    if (!current) return;
+    assertUploadGroupTransition(current.uploadGroupStatus, nextStatus);
+    if (current.uploadGroupStatus === nextStatus) return;
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    getDb().prepare(
+      `UPDATE day_folders
+       SET upload_group_status = ?,
+           sealed_at = CASE WHEN ? = 'sealed' THEN COALESCE(sealed_at, ?) ELSE sealed_at END,
+           cleanable_at = CASE WHEN ? = 'cleanable' THEN COALESCE(cleanable_at, ?) ELSE cleanable_at END,
+           cleaned_at = CASE WHEN ? = 'cleaned' THEN COALESCE(cleaned_at, ?) ELSE cleaned_at END,
+           updated_at = ?
+       WHERE id = ?`
+    ).run(nextStatus, nextStatus, now, nextStatus, now, nextStatus, now, now, id);
+  }
   recalculate(id, now = /* @__PURE__ */ new Date()) {
     const record = this.getRecordById(id);
     if (!record) return null;
@@ -3632,10 +4381,17 @@ class DayFolderRepo {
       }
     }
     const childTasks = record.childFolders.map(
-      (folderName) => latestByPath.get(normalizeFolderPath(path.join(record.folderPath, folderName))) || null
+      (folderName) => latestByPath.get(normalizeFolderPath(path.join(record.folderPath, folderName))) || (folderName === record.folderName ? latestByPath.get(normalizeFolderPath(record.folderPath)) : null) || null
     );
     const childStatuses = childTasks.map((task) => task?.status || null);
-    const status = record.ignored ? "completed_with_skips" : determineDayFolderStatus(record.date, childStatuses, now);
+    const uploadGroupStatus = deriveUploadGroupStatus({
+      currentStatus: record.uploadGroupStatus,
+      completion: this.completionPolicyFor(record, childTasks),
+      taskStatuses: childStatuses,
+      lastActivityAt: this.latestActivityAt(record, childTasks),
+      now
+    });
+    const status = record.ignored ? "completed_with_skips" : uploadGroupStatusToDayFolderStatus(uploadGroupStatus, childStatuses);
     const completedChildren = childTasks.filter(
       (task) => task?.status === "completed" || task?.status === "synced" || task?.status === "skipped"
     ).length;
@@ -3645,10 +4401,12 @@ class DayFolderRepo {
     const uploadedBytes = childTasks.reduce((sum, task) => sum + (task?.uploadedBytes || 0), 0);
     const updatedAt = (/* @__PURE__ */ new Date()).toISOString();
     const completedAt = status === "completed" || status === "completed_with_skips" ? record.completedAt || updatedAt : null;
+    const sealedAt = uploadGroupStatus === "sealed" || uploadGroupStatus === "cleanable" || uploadGroupStatus === "cleaned" ? record.sealedAt || completedAt || updatedAt : record.sealedAt;
     getDb().prepare(
       `UPDATE day_folders SET
         status = ?, completed_children = ?, total_files = ?, uploaded_files = ?,
-        total_bytes = ?, uploaded_bytes = ?, updated_at = ?, completed_at = ?
+        total_bytes = ?, uploaded_bytes = ?, upload_group_status = ?,
+        updated_at = ?, completed_at = ?, sealed_at = ?
        WHERE id = ?`
     ).run(
       status,
@@ -3657,8 +4415,10 @@ class DayFolderRepo {
       uploadedFiles,
       totalBytes,
       uploadedBytes,
+      uploadGroupStatus,
       updatedAt,
       completedAt,
+      sealedAt,
       id
     );
     return this.getById(id);
@@ -3669,6 +4429,9 @@ class DayFolderRepo {
     const expectedPaths = new Set(
       record.childFolders.map((name) => normalizeFolderPath(path.join(record.folderPath, name)))
     );
+    if (record.childFolders.includes(record.folderName)) {
+      expectedPaths.add(normalizeFolderPath(record.folderPath));
+    }
     const latestByPath = /* @__PURE__ */ new Map();
     for (const task of getTaskRepo().listByDayFolder(id)) {
       const path2 = normalizeFolderPath(task.folderPath);
@@ -3682,11 +4445,41 @@ class DayFolderRepo {
     const cutoff = new Date(Date.now() - retentionDays * 864e5).toISOString();
     const rows = getDb().prepare(
       `SELECT * FROM day_folders
-       WHERE status IN ('completed', 'completed_with_skips')
-         AND completed_at IS NOT NULL AND completed_at < ?
-       ORDER BY completed_at ASC`
+       WHERE upload_group_status IN ('sealed', 'cleanable')
+         AND COALESCE(sealed_at, completed_at) IS NOT NULL
+         AND COALESCE(sealed_at, completed_at) < ?
+       ORDER BY COALESCE(sealed_at, completed_at) ASC`
     ).all(cutoff);
     return rows.map((row) => this.toSummary(rowToRecord(row)));
+  }
+  isSafeToClean(id) {
+    const record = this.getRecordById(id);
+    if (!record) return false;
+    if (record.uploadGroupStatus !== "sealed" && record.uploadGroupStatus !== "cleanable") {
+      return false;
+    }
+    const blockingTasks = getDb().prepare(
+      `SELECT COUNT(*) AS count
+       FROM tasks
+       WHERE day_folder_id = ?
+         AND status IN ('pending', 'scanning', 'uploading', 'retrying', 'failed', 'paused')`
+    ).get(id);
+    if ((blockingTasks.count || 0) > 0) return false;
+    const incompleteDestinations = getDb().prepare(
+      `SELECT COUNT(*) AS count
+       FROM task_destinations
+       WHERE task_id IN (SELECT id FROM tasks WHERE day_folder_id = ?)
+         AND status NOT IN ('completed', 'synced', 'skipped')`
+    ).get(id);
+    if ((incompleteDestinations.count || 0) > 0) return false;
+    const incompleteFiles = getDb().prepare(
+      `SELECT COUNT(*) AS count
+       FROM task_files
+       WHERE task_id IN (SELECT id FROM tasks WHERE day_folder_id = ?)
+         AND source_status = 'present'
+         AND status NOT IN ('completed', 'skipped')`
+    ).get(id);
+    return (incompleteFiles.count || 0) === 0;
   }
   clearCompleted(before, provider) {
     const db2 = getDb();
@@ -3790,6 +4583,28 @@ class DayFolderRepo {
     const normalizedPath = normalizeFolderPath(folderPath);
     const row = getDb().prepare("SELECT * FROM day_folders WHERE folder_path = ?").get(normalizedPath);
     return row ? rowToRecord(row) : null;
+  }
+  completionPolicyFor(record, childTasks) {
+    const taskPolicy = childTasks.find((task) => task?.profileSnapshot?.completion)?.profileSnapshot?.completion;
+    if (taskPolicy) return taskPolicy;
+    if (record.profileId) {
+      const row = getDb().prepare(
+        `SELECT profile_snapshot_json
+         FROM tasks
+         WHERE day_folder_id = ? AND profile_snapshot_json IS NOT NULL
+         ORDER BY created_at DESC
+         LIMIT 1`
+      ).get(record.id);
+      const profile = row ? safeParseProfile(row.profile_snapshot_json) : null;
+      if (profile?.completion) return profile.completion;
+    }
+    return DEFAULT_COMPLETION_POLICY;
+  }
+  latestActivityAt(record, childTasks) {
+    return childTasks.reduce(
+      (latest, task) => task && Date.parse(task.updatedAt) > Date.parse(latest) ? task.updatedAt : latest,
+      record.updatedAt
+    );
   }
   toSummary(record) {
     const { childFolders: _childFolders, ...summary } = record;
@@ -4154,7 +4969,7 @@ class DayFolderService {
         removeDayUpload(summary.folderPath);
       }
     } catch (err) {
-      log.error("更新日期目录标记失败:", summary.folderPath, err);
+      log.error("更新 legacy 归档组标记失败:", summary.folderPath, err);
     }
     this.broadcast(summary);
     return summary;
@@ -4274,6 +5089,206 @@ function getPluginRunRepo() {
   if (!instance$g) instance$g = new PluginRunRepo();
   return instance$g;
 }
+const MARKER_FILE_NAMES = /* @__PURE__ */ new Set([
+  "tmp_upload.json",
+  "process_task.json",
+  "day_upload.json"
+]);
+const ASYNC_STAT_BATCH_SIZE = 64;
+const DEFAULT_SCAN_BATCH_SIZE = 1e3;
+class FileFilterService {
+  rules;
+  whitelist = [];
+  blacklist = [];
+  regexExcludes = [];
+  suffixes = /* @__PURE__ */ new Set();
+  constructor(rules) {
+    this.rules = rules;
+    this.compileRules();
+  }
+  updateRules(rules) {
+    this.rules = rules;
+    this.compileRules();
+  }
+  /**
+   * 判断单个文件是否应该被包含
+   * @param relativePath 文件相对路径
+   * @returns true = 包含, false = 排除
+   */
+  shouldInclude(relativePath) {
+    const fileName = path.basename(relativePath);
+    const ext = path.extname(relativePath).toLowerCase();
+    if (this.whitelist.length > 0) {
+      for (const matcher of this.whitelist) {
+        if (this.matchPattern(fileName, relativePath, ext, matcher)) {
+          return true;
+        }
+      }
+    }
+    if (this.blacklist.length > 0) {
+      for (const matcher of this.blacklist) {
+        if (this.matchPattern(fileName, relativePath, ext, matcher)) {
+          return false;
+        }
+      }
+    }
+    if (this.regexExcludes.length > 0) {
+      for (const re of this.regexExcludes) {
+        if (re.test(relativePath) || re.test(fileName)) {
+          return false;
+        }
+      }
+    }
+    if (this.suffixes.size > 0) {
+      return this.suffixes.has(ext);
+    }
+    return true;
+  }
+  /**
+   * 递归扫描文件夹，返回过滤后的文件列表
+   */
+  scanFolder(folderPath) {
+    const results = [];
+    this.walkDir(folderPath, folderPath, results);
+    return results;
+  }
+  async scanFolderAsync(folderPath) {
+    const results = [];
+    for await (const batch of this.scanFolderBatches(folderPath)) {
+      results.push(...batch);
+    }
+    return results;
+  }
+  async *scanFolderBatches(folderPath, batchSize = DEFAULT_SCAN_BATCH_SIZE) {
+    const normalizedBatchSize = Math.max(1, Math.floor(batchSize || 1));
+    const pendingStats = [];
+    const batch = [];
+    yield* this.walkDirAsync(
+      folderPath,
+      folderPath,
+      pendingStats,
+      batch,
+      normalizedBatchSize
+    );
+    yield* this.flushPendingStats(pendingStats, batch, normalizedBatchSize);
+    if (batch.length > 0) {
+      yield batch.splice(0, batch.length);
+    }
+  }
+  walkDir(basePath, currentPath, results) {
+    const entries = fs.readdirSync(currentPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(currentPath, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith(".")) continue;
+        this.walkDir(basePath, fullPath, results);
+      } else if (entry.isFile()) {
+        const relativePath = fullPath.slice(basePath.length + 1);
+        if (MARKER_FILE_NAMES.has(entry.name)) continue;
+        if (this.shouldInclude(relativePath)) {
+          const stat2 = fs.statSync(fullPath);
+          results.push({
+            relativePath,
+            absolutePath: fullPath,
+            size: stat2.size,
+            mtimeMs: stat2.mtimeMs
+          });
+        }
+      }
+    }
+  }
+  async *walkDirAsync(basePath, currentPath, pendingStats, batch, batchSize) {
+    const entries = await promises.readdir(currentPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(currentPath, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith(".")) continue;
+        yield* this.walkDirAsync(
+          basePath,
+          fullPath,
+          pendingStats,
+          batch,
+          batchSize
+        );
+      } else if (entry.isFile()) {
+        const relativePath = fullPath.slice(basePath.length + 1);
+        if (MARKER_FILE_NAMES.has(entry.name)) continue;
+        if (!this.shouldInclude(relativePath)) continue;
+        pendingStats.push(this.statScannedFile(fullPath, relativePath));
+        if (pendingStats.length >= ASYNC_STAT_BATCH_SIZE) {
+          yield* this.flushPendingStats(pendingStats, batch, batchSize);
+        }
+      }
+    }
+  }
+  async *flushPendingStats(pendingStats, batch, batchSize) {
+    if (pendingStats.length === 0) return;
+    const statBatch = pendingStats.splice(0, pendingStats.length);
+    const files = await Promise.all(statBatch);
+    for (const file of files) {
+      if (!file) continue;
+      batch.push(file);
+      if (batch.length >= batchSize) {
+        yield batch.splice(0, batch.length);
+      }
+    }
+  }
+  async statScannedFile(fullPath, relativePath) {
+    try {
+      const fileStat = await promises.stat(fullPath);
+      return {
+        relativePath,
+        absolutePath: fullPath,
+        size: fileStat.size,
+        mtimeMs: fileStat.mtimeMs
+      };
+    } catch {
+      return null;
+    }
+  }
+  compileRules() {
+    this.whitelist = this.rules.whitelist.map((pattern) => this.compilePattern(pattern)).filter((matcher) => Boolean(matcher));
+    this.blacklist = this.rules.blacklist.map((pattern) => this.compilePattern(pattern)).filter((matcher) => Boolean(matcher));
+    this.regexExcludes = [];
+    for (const pattern of this.rules.regex) {
+      try {
+        this.regexExcludes.push(new RegExp(pattern));
+      } catch {
+      }
+    }
+    this.suffixes = new Set(
+      this.rules.suffixes.map((suffix) => this.normalizeSuffix(suffix)).filter(Boolean)
+    );
+  }
+  compilePattern(pattern) {
+    if (!pattern) return null;
+    if (pattern.includes("*")) {
+      const regexStr = "^" + pattern.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$";
+      try {
+        return { wildcard: new RegExp(regexStr, "i") };
+      } catch {
+        return null;
+      }
+    }
+    if (pattern.startsWith(".")) {
+      return { suffix: this.normalizeSuffix(pattern) };
+    }
+    return { exactName: pattern };
+  }
+  matchPattern(fileName, relativePath, ext, matcher) {
+    if (matcher.exactName && fileName === matcher.exactName) return true;
+    if (matcher.suffix && ext === matcher.suffix) return true;
+    if (matcher.wildcard) {
+      return matcher.wildcard.test(fileName) || matcher.wildcard.test(relativePath);
+    }
+    return false;
+  }
+  normalizeSuffix(suffix) {
+    const trimmed = suffix.trim().toLowerCase();
+    if (!trimmed) return "";
+    return trimmed.startsWith(".") ? trimmed : `.${trimmed}`;
+  }
+}
 class CleanupService {
   timer = null;
   pendingRun = null;
@@ -4320,7 +5335,7 @@ class CleanupService {
       const stagingPaths = pluginRunRepo.listStagingPathsForCompletedTasks(retentionDays);
       if (tasks.length === 0 && dayFolders.length === 0 && stagingPaths.length === 0) return;
       log.info(
-        `自动清理: 发现 ${dayFolders.length} 个日期目录、${tasks.length} 个独立任务和 ${stagingPaths.length} 个插件工作目录可清理 (保留天数: ${retentionDays})`
+        `自动清理: 发现 ${dayFolders.length} 个归档组、${tasks.length} 个独立任务和 ${stagingPaths.length} 个插件工作目录可清理 (保留天数: ${retentionDays})`
       );
       let cleaned = 0;
       for (const dayFolder of dayFolders) {
@@ -4328,18 +5343,34 @@ class CleanupService {
           if (!fs.existsSync(dayFolder.folderPath)) {
             continue;
           }
+          await this.refreshGroupFiles(dayFolder.id);
+          const latest = dayFolderRepo.recalculate(dayFolder.id);
+          if (!latest) continue;
+          if (config.onlyAfterSealed !== false && latest.uploadGroupStatus !== "sealed" && latest.uploadGroupStatus !== "cleanable") {
+            continue;
+          }
+          if (!dayFolderRepo.isSafeToClean(latest.id)) {
+            continue;
+          }
+          dayFolderRepo.markCleanable(latest.id);
           await promises.rm(dayFolder.folderPath, { recursive: true, force: true });
+          dayFolderRepo.markCleaned(latest.id);
           cleaned++;
           log.info(
-            `自动清理: 已删除日期目录 ${dayFolder.folderPath} (日期目录ID: ${dayFolder.id}, 完成于: ${dayFolder.completedAt})`
+            `自动清理: 已删除归档组 ${dayFolder.folderPath} (归档组ID: ${dayFolder.id}, sealedAt: ${latest.sealedAt})`
           );
         } catch (err) {
-          log.error(`自动清理日期目录失败: ${dayFolder.folderPath}`, err);
+          log.error(`自动清理归档组失败: ${dayFolder.folderPath}`, err);
         }
       }
       for (const task of tasks) {
         try {
           if (!fs.existsSync(task.folderPath)) {
+            continue;
+          }
+          await this.refreshTaskFiles(task);
+          const latest = taskRepo.getById(task.id);
+          if (!latest || !this.isStandaloneTaskSafeToClean(latest)) {
             continue;
           }
           await promises.rm(task.folderPath, { recursive: true, force: true });
@@ -4373,6 +5404,45 @@ class CleanupService {
       return 7;
     }
     return Math.max(0, Math.floor(config.retentionDays));
+  }
+  async refreshGroupFiles(dayFolderId) {
+    const tasks = getDayFolderRepo().getChildTasks(dayFolderId);
+    await Promise.all(tasks.map((task) => this.refreshTaskFiles(task)));
+    getDayFolderService().refresh(dayFolderId);
+  }
+  async refreshTaskFiles(task) {
+    if (!fs.existsSync(task.folderPath) || task.status === "skipped") return;
+    const settings = getSettingsRepo().getAll();
+    const requiredStableChecks = task.sourceType === "local" && task.dayFolderId ? Math.max(2, settings.stability.checkCount || 2) : 1;
+    await getTaskRepo().reconcileFileBatches(
+      task.id,
+      new FileFilterService(
+        task.profileSnapshot?.filter || settings.filter
+      ).scanFolderBatches(task.folderPath),
+      requiredStableChecks
+    );
+  }
+  isStandaloneTaskSafeToClean(task) {
+    if (task.status !== "completed") return false;
+    if (task.destinations.length === 0) return false;
+    if (task.destinations.some(
+      (destination) => destination.status !== "completed" && destination.status !== "synced"
+    )) {
+      return false;
+    }
+    const summary = getTaskRepo().summarizeFiles(task.id);
+    if (summary.failedFiles > 0) return false;
+    const destinationRepo = getTaskDestinationRepo();
+    for (const destination of task.destinations) {
+      const destinationSummary = destinationRepo.summarizeFileTargets(
+        task.id,
+        destination.provider
+      );
+      if (destinationSummary.failed > 0 || destinationSummary.pending > 0) {
+        return false;
+      }
+    }
+    return summary.totalFiles === summary.completedFiles + summary.skippedFiles;
   }
 }
 let instance$f = null;
@@ -4660,243 +5730,116 @@ function getTaskQueueService() {
   if (!instance$e) instance$e = new TaskQueueService();
   return instance$e;
 }
-const MARKER_FILE_NAMES = /* @__PURE__ */ new Set([
-  "tmp_upload.json",
-  "process_task.json",
-  "day_upload.json"
-]);
-const ASYNC_STAT_BATCH_SIZE = 64;
-const DEFAULT_SCAN_BATCH_SIZE = 1e3;
-class FileFilterService {
-  rules;
-  whitelist = [];
-  blacklist = [];
-  regexExcludes = [];
-  suffixes = /* @__PURE__ */ new Set();
-  constructor(rules) {
-    this.rules = rules;
-    this.compileRules();
-  }
-  updateRules(rules) {
-    this.rules = rules;
-    this.compileRules();
-  }
-  /**
-   * 判断单个文件是否应该被包含
-   * @param relativePath 文件相对路径
-   * @returns true = 包含, false = 排除
-   */
-  shouldInclude(relativePath) {
-    const fileName = path.basename(relativePath);
-    const ext = path.extname(relativePath).toLowerCase();
-    if (this.whitelist.length > 0) {
-      for (const matcher of this.whitelist) {
-        if (this.matchPattern(fileName, relativePath, ext, matcher)) {
-          return true;
-        }
+async function discoverUploadGroups(rootDir, config = {}) {
+  const normalizedConfig = normalizeDiscoveryConfig(config);
+  if (!hasGroupRule(normalizedConfig)) {
+    return [
+      {
+        groupKey: path.basename(rootDir) || normalizeDiscoveryPath(rootDir),
+        folderPath: rootDir,
+        relativePath: "",
+        variables: {},
+        taskDirectories: await discoverTaskDirectories(rootDir, rootDir, {}, normalizedConfig)
       }
-    }
-    if (this.blacklist.length > 0) {
-      for (const matcher of this.blacklist) {
-        if (this.matchPattern(fileName, relativePath, ext, matcher)) {
-          return false;
-        }
-      }
-    }
-    if (this.regexExcludes.length > 0) {
-      for (const re of this.regexExcludes) {
-        if (re.test(relativePath) || re.test(fileName)) {
-          return false;
-        }
-      }
-    }
-    if (this.suffixes.size > 0) {
-      return this.suffixes.has(ext);
-    }
-    return true;
+    ];
   }
-  /**
-   * 递归扫描文件夹，返回过滤后的文件列表
-   */
-  scanFolder(folderPath) {
-    const results = [];
-    this.walkDir(folderPath, folderPath, results);
-    return results;
+  const groupDepth = normalizedConfig.recursive ? Number.POSITIVE_INFINITY : Math.max(1, discoveryPatternDepth(normalizedConfig.groupPattern));
+  const candidates = await listDirectoryCandidates(rootDir, groupDepth);
+  const groups = [];
+  for (const candidate of candidates) {
+    const match = matchDiscoveryRule(normalizedConfig, "group", candidate.relativePath);
+    if (!match) continue;
+    const variables = match.variables;
+    groups.push({
+      groupKey: candidate.relativePath || candidate.name,
+      folderPath: candidate.absolutePath,
+      relativePath: candidate.relativePath,
+      variables,
+      taskDirectories: await discoverTaskDirectories(
+        rootDir,
+        candidate.absolutePath,
+        variables,
+        normalizedConfig
+      )
+    });
   }
-  async scanFolderAsync(folderPath) {
-    const results = [];
-    for await (const batch of this.scanFolderBatches(folderPath)) {
-      results.push(...batch);
-    }
-    return results;
-  }
-  async *scanFolderBatches(folderPath, batchSize = DEFAULT_SCAN_BATCH_SIZE) {
-    const normalizedBatchSize = Math.max(1, Math.floor(batchSize || 1));
-    const pendingStats = [];
-    const batch = [];
-    yield* this.walkDirAsync(
-      folderPath,
-      folderPath,
-      pendingStats,
-      batch,
-      normalizedBatchSize
-    );
-    yield* this.flushPendingStats(pendingStats, batch, normalizedBatchSize);
-    if (batch.length > 0) {
-      yield batch.splice(0, batch.length);
-    }
-  }
-  walkDir(basePath, currentPath, results) {
-    const entries = fs.readdirSync(currentPath, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(currentPath, entry.name);
-      if (entry.isDirectory()) {
-        if (entry.name.startsWith(".")) continue;
-        this.walkDir(basePath, fullPath, results);
-      } else if (entry.isFile()) {
-        const relativePath = fullPath.slice(basePath.length + 1);
-        if (MARKER_FILE_NAMES.has(entry.name)) continue;
-        if (this.shouldInclude(relativePath)) {
-          const stat2 = fs.statSync(fullPath);
-          results.push({
-            relativePath,
-            absolutePath: fullPath,
-            size: stat2.size,
-            mtimeMs: stat2.mtimeMs
-          });
-        }
-      }
-    }
-  }
-  async *walkDirAsync(basePath, currentPath, pendingStats, batch, batchSize) {
-    const entries = await promises.readdir(currentPath, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(currentPath, entry.name);
-      if (entry.isDirectory()) {
-        if (entry.name.startsWith(".")) continue;
-        yield* this.walkDirAsync(
-          basePath,
-          fullPath,
-          pendingStats,
-          batch,
-          batchSize
-        );
-      } else if (entry.isFile()) {
-        const relativePath = fullPath.slice(basePath.length + 1);
-        if (MARKER_FILE_NAMES.has(entry.name)) continue;
-        if (!this.shouldInclude(relativePath)) continue;
-        pendingStats.push(this.statScannedFile(fullPath, relativePath));
-        if (pendingStats.length >= ASYNC_STAT_BATCH_SIZE) {
-          yield* this.flushPendingStats(pendingStats, batch, batchSize);
-        }
-      }
-    }
-  }
-  async *flushPendingStats(pendingStats, batch, batchSize) {
-    if (pendingStats.length === 0) return;
-    const statBatch = pendingStats.splice(0, pendingStats.length);
-    const files = await Promise.all(statBatch);
-    for (const file of files) {
-      if (!file) continue;
-      batch.push(file);
-      if (batch.length >= batchSize) {
-        yield batch.splice(0, batch.length);
-      }
-    }
-  }
-  async statScannedFile(fullPath, relativePath) {
-    try {
-      const fileStat = await promises.stat(fullPath);
-      return {
-        relativePath,
-        absolutePath: fullPath,
-        size: fileStat.size,
-        mtimeMs: fileStat.mtimeMs
-      };
-    } catch {
-      return null;
-    }
-  }
-  compileRules() {
-    this.whitelist = this.rules.whitelist.map((pattern) => this.compilePattern(pattern)).filter((matcher) => Boolean(matcher));
-    this.blacklist = this.rules.blacklist.map((pattern) => this.compilePattern(pattern)).filter((matcher) => Boolean(matcher));
-    this.regexExcludes = [];
-    for (const pattern of this.rules.regex) {
-      try {
-        this.regexExcludes.push(new RegExp(pattern));
-      } catch {
-      }
-    }
-    this.suffixes = new Set(
-      this.rules.suffixes.map((suffix) => this.normalizeSuffix(suffix)).filter(Boolean)
-    );
-  }
-  compilePattern(pattern) {
-    if (!pattern) return null;
-    if (pattern.includes("*")) {
-      const regexStr = "^" + pattern.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$";
-      try {
-        return { wildcard: new RegExp(regexStr, "i") };
-      } catch {
-        return null;
-      }
-    }
-    if (pattern.startsWith(".")) {
-      return { suffix: this.normalizeSuffix(pattern) };
-    }
-    return { exactName: pattern };
-  }
-  matchPattern(fileName, relativePath, ext, matcher) {
-    if (matcher.exactName && fileName === matcher.exactName) return true;
-    if (matcher.suffix && ext === matcher.suffix) return true;
-    if (matcher.wildcard) {
-      return matcher.wildcard.test(fileName) || matcher.wildcard.test(relativePath);
-    }
-    return false;
-  }
-  normalizeSuffix(suffix) {
-    const trimmed = suffix.trim().toLowerCase();
-    if (!trimmed) return "";
-    return trimmed.startsWith(".") ? trimmed : `.${trimmed}`;
-  }
+  return groups.sort((a, b) => a.groupKey.localeCompare(b.groupKey));
 }
-function createWorkDirNameRegex(pattern) {
-  try {
-    return new RegExp(pattern?.trim() || DEFAULT_WORK_DIR_NAME_PATTERN);
-  } catch {
-    return new RegExp(DEFAULT_WORK_DIR_NAME_PATTERN);
+async function discoverTaskDirectories(rootDir, groupPath, groupVariables, config) {
+  if (!hasTaskRule(config)) {
+    return [
+      {
+        taskKey: normalizeDiscoveryPath(groupPath.slice(rootDir.length)) || path.basename(groupPath),
+        folderName: path.basename(groupPath),
+        folderPath: groupPath,
+        relativePath: normalizeDiscoveryPath(groupPath.slice(rootDir.length)),
+        variables: {},
+        ignored: false
+      }
+    ];
   }
+  const taskDepth = config.recursive ? Number.POSITIVE_INFINITY : Math.max(1, discoveryPatternDepth(config.taskPattern));
+  const candidates = await listDirectoryCandidates(groupPath, taskDepth);
+  const result = [];
+  for (const candidate of candidates) {
+    const match = matchDiscoveryRule(config, "task", candidate.relativePath);
+    result.push({
+      taskKey: candidate.relativePath || candidate.name,
+      folderName: candidate.name,
+      folderPath: candidate.absolutePath,
+      relativePath: candidate.relativePath,
+      variables: match ? { ...groupVariables, ...match.variables } : groupVariables,
+      ignored: !match
+    });
+  }
+  return result.sort((a, b) => a.taskKey.localeCompare(b.taskKey));
 }
-async function discoverCurrentDayDirectory(rootDir, dateName, workDirNamePattern) {
-  if (!isDateFolderName(dateName)) return null;
-  const folderPath = path.join(rootDir, dateName);
-  let childEntries;
+async function listDirectoryCandidates(rootDir, maxDepth) {
+  const candidates = [];
+  await visit(rootDir, "", 0, maxDepth, candidates);
+  return candidates;
+}
+async function visit(rootDir, relativePath, depth, maxDepth, candidates) {
+  if (depth >= maxDepth) return;
+  let entries;
   try {
-    childEntries = await promises.readdir(folderPath, { withFileTypes: true });
+    entries = await promises.readdir(path.join(rootDir, relativePath), { withFileTypes: true });
   } catch (error) {
     const code = error.code;
-    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    if (code === "ENOENT" || code === "ENOTDIR") return;
     throw error;
   }
-  const workDirRegex = createWorkDirNameRegex(workDirNamePattern);
-  const childFolderNames = [];
-  const ignoredChildFolderNames = [];
-  for (const child of childEntries) {
-    if (!child.isDirectory() || child.name.startsWith(".")) continue;
-    if (workDirRegex.test(child.name)) {
-      childFolderNames.push(child.name);
-    } else {
-      ignoredChildFolderNames.push(child.name);
-    }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    const childRelativePath = normalizeDiscoveryPath(path.join(relativePath, entry.name));
+    candidates.push({
+      absolutePath: path.join(rootDir, childRelativePath),
+      relativePath: childRelativePath,
+      name: entry.name
+    });
+    await visit(rootDir, childRelativePath, depth + 1, maxDepth, candidates);
   }
+}
+function normalizeDiscoveryConfig(config) {
   return {
-    dateName,
-    folderPath,
-    childFolderNames: childFolderNames.sort(),
-    ignoredChildFolderNames: ignoredChildFolderNames.sort()
+    groupPattern: normalizeOptionalString(config.groupPattern),
+    taskPattern: normalizeOptionalString(config.taskPattern),
+    groupRegex: normalizeOptionalString(config.groupRegex),
+    taskRegex: normalizeOptionalString(config.taskRegex),
+    recursive: config.recursive ?? false
   };
 }
-const NON_WORK_DIR_REASON = "非工作次目录";
+function hasGroupRule(config) {
+  return Boolean(config.groupPattern || config.groupRegex);
+}
+function hasTaskRule(config) {
+  return Boolean(config.taskPattern || config.taskRegex);
+}
+function normalizeOptionalString(value) {
+  const trimmed = value?.trim();
+  return trimmed || void 0;
+}
+const NON_WORK_DIR_REASON = "非任务目录";
 const INITIAL_SCAN_DELAY_MS = 3e3;
 const SCAN_BATCH_SIZE = 4;
 const RECONCILE_BATCH_SIZE = 2;
@@ -5006,7 +5949,6 @@ class ScannerService {
     const activeRoots = getActiveProfileScanRoots(allSettings.profiles);
     const directories = activeRoots.map((root) => root.directory);
     const intervalMs = (scanConfig?.intervalSeconds || 30) * 1e3;
-    const today = this.formatLocalDate(/* @__PURE__ */ new Date());
     const seenChildPaths = /* @__PURE__ */ new Set();
     let scannedDirs = 0;
     let newDirsFound = 0;
@@ -5022,8 +5964,6 @@ class ScannerService {
         const profile = getProfileById(allSettings, root.profileId);
         const result = await this.scanRootDirectory(
           root,
-          today,
-          profile.scan.workDirNamePattern || scanConfig?.workDirNamePattern,
           seenChildPaths,
           profile
         );
@@ -5059,25 +5999,25 @@ class ScannerService {
       }
     }
   }
-  async scanRootDirectory(root, today, workDirNamePattern, seenChildPaths, profile = getProfileById(getSettingsRepo().getAll(), root.profileId)) {
+  async scanRootDirectory(root, seenChildPaths, profile = getProfileById(getSettingsRepo().getAll(), root.profileId)) {
     let scanned = 0;
     let newFound = 0;
     let existing = 0;
     let ignored = 0;
     let skipped = 0;
     try {
-      const dayDirectory = await discoverCurrentDayDirectory(
+      const groups = await discoverUploadGroups(
         root.directory,
-        today,
-        workDirNamePattern
+        profile.discovery
       );
-      if (dayDirectory) {
-        const result = await this.scanDayDirectory(
+      for (let index = 0; index < groups.length; index++) {
+        const group = groups[index];
+        const result = await this.scanUploadGroupDirectory(
           root.directory,
-          dayDirectory.folderPath,
-          dayDirectory.dateName,
-          dayDirectory.childFolderNames,
-          dayDirectory.ignoredChildFolderNames,
+          group.folderPath,
+          group.groupKey,
+          group.variables,
+          group.taskDirectories,
           seenChildPaths,
           root.providers,
           profile
@@ -5087,32 +6027,49 @@ class ScannerService {
         existing += result.existing;
         ignored += result.ignored;
         skipped += result.skipped;
+        const shouldCloseByRollover = profile.completion.mode === "rollover" && index < groups.length - 1;
+        const shouldCloseByMarker = profile.completion.mode === "marker-file" && fs.existsSync(path.join(group.folderPath, profile.completion.markerFile));
+        if (shouldCloseByRollover || shouldCloseByMarker) {
+          const uploadGroup = getDayFolderRepo().getByPath(group.folderPath);
+          if (uploadGroup?.uploadGroupStatus === "open") {
+            getDayFolderRepo().markClosing(uploadGroup.id);
+            getDayFolderService().refresh(uploadGroup.id);
+          }
+        }
+        if ((index + 1) % SCAN_BATCH_SIZE === 0) {
+          await this.yieldToEventLoop();
+        }
       }
     } catch (err) {
       log.error("扫描数据根目录失败:", root.directory, err);
     }
     return { scanned, newFound, existing, ignored, skipped };
   }
-  async scanDayDirectory(sourceRootDir, dayFolderPath, dateName, discoveredChildNames, ignoredChildNames, seenChildPaths, providers, profile) {
-    const dayFolder = getDayFolderRepo().ensure(dayFolderPath, dateName);
+  async scanUploadGroupDirectory(sourceRootDir, groupPath, groupKey, groupVariables, discoveredTasks, seenChildPaths, providers, profile) {
+    const dayFolder = getDayFolderRepo().ensure(
+      groupPath,
+      groupKey,
+      groupVariables,
+      profile.id
+    );
     const childNames = Array.from(
-      /* @__PURE__ */ new Set([...discoveredChildNames, ...ignoredChildNames])
+      new Set(discoveredTasks.map((task) => task.folderName))
     ).sort();
-    const ignoredSet = new Set(ignoredChildNames);
     let scanned = 0;
     let newFound = 0;
     let existing = 0;
     let ignored = 0;
     let skipped = 0;
     try {
-      for (let index = 0; index < childNames.length; index++) {
-        const childName = childNames[index];
-        const childPath = path.join(dayFolderPath, childName);
+      for (let index = 0; index < discoveredTasks.length; index++) {
+        const discoveredTask = discoveredTasks[index];
+        const childName = discoveredTask.folderName;
+        const childPath = discoveredTask.folderPath;
+        const variables = discoveredTask.ignored ? groupVariables : { ...groupVariables, ...discoveredTask.variables };
         const pathContext = {
           sourcePath: childPath,
           basePath: sourceRootDir,
-          dateName,
-          workDirName: childName
+          variables
         };
         const targetSnapshot = this.pendingTargetSnapshot(providers, pathContext, profile);
         const uploadRelativePath = targetSnapshot.uploadRelativePath;
@@ -5121,9 +6078,10 @@ class ScannerService {
         const existingTask = getTaskRepo().getByFolderPath(childPath);
         if (existingTask) {
           this.attachTaskToDayFolder(existingTask, dayFolder.id);
+          getTaskRepo().updateGroupVariables(existingTask.id, variables);
           this.pendingDirs.delete(childPath);
           if (dayFolder.ignored && existingTask.status !== "completed" && existingTask.status !== "synced") {
-            getTaskRepo().skip(existingTask.id, "用户忽略整个日期");
+            getTaskRepo().skip(existingTask.id, "用户忽略整个归档组");
             this.broadcastTaskStatus(
               existingTask.id,
               existingTask.status,
@@ -5133,12 +6091,13 @@ class ScannerService {
           existing++;
           continue;
         }
-        if (ignoredSet.has(childName)) {
+        if (discoveredTask.ignored) {
           const task = this.registerIgnoredDir(
             childPath,
             childName,
             dayFolder.id,
             uploadRelativePath,
+            variables,
             providers,
             targetSnapshot
           );
@@ -5153,7 +6112,8 @@ class ScannerService {
             childPath,
             childName,
             dayFolder.id,
-            dateName,
+            groupKey,
+            variables,
             processMarker,
             readTmpUpload(childPath)
           );
@@ -5166,7 +6126,8 @@ class ScannerService {
           const task = this.registerNewDir({
             path: childPath,
             dayFolderId: dayFolder.id,
-            dateName,
+            groupKey,
+            variables,
             folderName: childName,
             uploadRelativePath: markerUploadRelativePath,
             checks: 0,
@@ -5185,7 +6146,7 @@ class ScannerService {
             destinationObjectKeyTemplates: tmpMarker.metadata.destinationObjectKeyTemplates
           });
           if (dayFolder.ignored) {
-            getTaskRepo().skip(task.id, "用户忽略整个日期");
+            getTaskRepo().skip(task.id, "用户忽略整个归档组");
             this.broadcastTaskStatus(task.id, task.status, "skipped");
           } else {
             this.queueReconcileTask(task);
@@ -5194,11 +6155,12 @@ class ScannerService {
           continue;
         }
         if (!this.pendingDirs.has(childPath)) {
-          log.info("发现新工作次目录, 注册持续同步任务:", childPath);
+          log.info("发现新任务目录, 注册持续同步任务:", childPath);
           const pending = {
             path: childPath,
             dayFolderId: dayFolder.id,
-            dateName,
+            groupKey,
+            variables,
             folderName: childName,
             uploadRelativePath,
             checks: 0,
@@ -5215,7 +6177,7 @@ class ScannerService {
           };
           const task = this.registerNewDir(pending);
           if (dayFolder.ignored) {
-            getTaskRepo().skip(task.id, "用户忽略整个日期");
+            getTaskRepo().skip(task.id, "用户忽略整个归档组");
             this.broadcastTaskStatus(task.id, task.status, "skipped");
           } else {
             this.queueReconcileTask(task);
@@ -5227,14 +6189,13 @@ class ScannerService {
         }
       }
     } catch (err) {
-      log.error("扫描日期目录失败:", dayFolderPath, err);
+      log.error("扫描归档组失败:", groupPath, err);
     }
     getDayFolderService().refresh(dayFolder.id, childNames);
     return { scanned, newFound, existing, ignored, skipped };
   }
   checkStability() {
-    const today = this.formatLocalDate(/* @__PURE__ */ new Date());
-    const taskIds = getTaskRepo().listContinuouslyMonitoredTaskIds(today);
+    const taskIds = getTaskRepo().listContinuouslyMonitoredTaskIds();
     if (taskIds.length > 0) {
       const batchSize = Math.min(RECONCILE_BATCH_SIZE, taskIds.length);
       for (let i = 0; i < batchSize; i++) {
@@ -5244,12 +6205,6 @@ class ScannerService {
       this.stabilityCursor = (this.stabilityCursor + batchSize) % taskIds.length;
     }
     this.broadcastStatus();
-  }
-  formatLocalDate(date) {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
   }
   registerNewDir(pending) {
     const settings = getSettingsRepo().getAll();
@@ -5277,7 +6232,9 @@ class ScannerService {
       metadata: {
         source: "local",
         dayFolderId: pending.dayFolderId,
-        date: pending.dateName,
+        date: pending.variables.date,
+        groupKey: pending.groupKey,
+        groupVariables: pending.variables,
         uploadRelativePath: pending.uploadRelativePath,
         uploadTargetMode: snapshot.mode,
         profileId: snapshot.profileId,
@@ -5295,24 +6252,26 @@ class ScannerService {
       pending.folderName,
       pending.dayFolderId,
       pending.uploadRelativePath,
-      snapshot
+      snapshot,
+      pending.variables
     );
-    log.info("工作次目录已注册为上传任务:", pending.path);
+    log.info("任务目录已注册为上传任务:", pending.path);
     setTimeout(() => this.collectDataInfo(pending.path), 0);
     getDayFolderService().refresh(pending.dayFolderId);
     return task;
   }
-  registerIgnoredDir(dirPath, folderName, dayFolderId, uploadRelativePath, providers, targetSnapshot) {
+  registerIgnoredDir(dirPath, folderName, dayFolderId, uploadRelativePath, variables, providers, targetSnapshot) {
     const task = this.ensureTaskRegistered(
       dirPath,
       folderName,
       dayFolderId,
       uploadRelativePath,
-      targetSnapshot || (providers ? getUploadTargetSnapshot(getSettingsRepo().getAll()) : void 0)
+      targetSnapshot || (providers ? getUploadTargetSnapshot(getSettingsRepo().getAll()) : void 0),
+      variables
     );
     if (task.status !== "skipped" || task.errorMessage !== NON_WORK_DIR_REASON) {
       getTaskRepo().skip(task.id, NON_WORK_DIR_REASON);
-      log.info("已忽略非工作次目录:", dirPath);
+      log.info("已忽略非任务目录:", dirPath);
     }
     getDayFolderService().refresh(dayFolderId);
     return getTaskRepo().getById(task.id) || task;
@@ -5328,9 +6287,9 @@ class ScannerService {
       ignoreInitial: true,
       persistent: true,
       awaitWriteFinish: false,
-      // 只监听 根目录/日期目录/工作次目录 的目录结构。
+      // 只监听 Source/Group/Task 附近的目录结构。
       // 文件变化由稳定性检查和 30 秒全量校准处理，避免大量小文件耗尽 inotify。
-      depth: 2,
+      depth: 4,
       ignored: (path2, stats) => {
         const normalized = path2.replace(/\\/g, "/");
         return stats?.isFile() === true || normalized.includes("/.git/") || normalized.endsWith("/tmp_upload.json") || normalized.endsWith("/process_task.json") || normalized.endsWith("/day_upload.json");
@@ -5474,7 +6433,7 @@ class ScannerService {
       });
     }
   }
-  registerLegacyCompletedDir(dirPath, folderName, dayFolderId, dateName, processMarker, tmpMarker) {
+  registerLegacyCompletedDir(dirPath, folderName, dayFolderId, groupKey, variables, processMarker, tmpMarker) {
     const legacyUploadRelativePath = folderName;
     const markerProviders = Object.keys(processMarker.destinations || {});
     const mode = processMarker.uploadTargetMode || (markerProviders.includes("tencent") && markerProviders.includes("aliyun") ? "both" : markerProviders.includes("tencent") ? "tencent" : "aliyun");
@@ -5494,7 +6453,8 @@ class ScannerService {
         prefixes,
         uploadRelativePaths,
         uploadRelativePath: legacyUploadRelativePath
-      }
+      },
+      variables
     );
     const taskRepo = getTaskRepo();
     taskRepo.setTotals(task.id, processMarker.totalFiles, 0);
@@ -5527,7 +6487,9 @@ class ScannerService {
       metadata: {
         source: "local",
         dayFolderId,
-        date: dateName,
+        date: variables.date,
+        groupKey,
+        groupVariables: variables,
         uploadRelativePath: legacyUploadRelativePath,
         uploadTargetMode: mode,
         destinationPrefixes: prefixes,
@@ -5541,9 +6503,9 @@ class ScannerService {
       lastUpdated: (/* @__PURE__ */ new Date()).toISOString()
     });
     getDayFolderService().refresh(dayFolderId);
-    log.info("信任旧完成标记并登记焊接任务:", dirPath);
+    log.info("信任旧完成标记并登记任务目录:", dirPath);
   }
-  ensureTaskRegistered(dirPath, folderName, dayFolderId, uploadRelativePath, targetSnapshot) {
+  ensureTaskRegistered(dirPath, folderName, dayFolderId, uploadRelativePath, targetSnapshot, groupVariables = {}) {
     const taskRepo = getTaskRepo();
     const existing = taskRepo.getByFolderPath(dirPath);
     if (existing) {
@@ -5566,7 +6528,8 @@ class ScannerService {
       sourceType: "local",
       profileId: snapshot.profileId,
       profileName: snapshot.profileName,
-      profileSnapshot: snapshot.profileSnapshot
+      profileSnapshot: snapshot.profileSnapshot,
+      groupVariables
     });
   }
   pendingTargetSnapshot(providers, context, profile) {
@@ -6132,7 +7095,7 @@ class SSHRsyncService {
       throw new Error("该机器已有传输进程在运行");
     }
     const profile = getProfileById(settings, machine.profileId);
-    const providers = providersForMode(profile.targetMode);
+    const providers = providersForProfile(profile);
     const uploaders = /* @__PURE__ */ new Map();
     try {
       for (const provider of providers) {
@@ -6415,7 +7378,7 @@ class OSSBrowserService {
     if (!extensions.enabledIds.includes(EXTENSION_IDS.OSS_BROWSER)) {
       throw new Error("当前 Profile 未启用 OSS 浏览器插件");
     }
-    if (!providersForMode(profile.targetMode).includes("aliyun")) {
+    if (!providersForProfile(profile).includes("aliyun")) {
       throw new Error("OSS 浏览器插件第一版仅支持包含阿里云目标的 Profile");
     }
     const config = {
@@ -7012,8 +7975,14 @@ function registerAllIpc() {
     const settingsRepo = getSettingsRepo();
     const settings = settingsRepo.getAll();
     const profile = getProfileById(settings, args.profileId);
+    const variables = extractProfilePathVariables(
+      profile,
+      args.folderPath,
+      path.dirname(args.folderPath)
+    );
     const snapshot = resolveProfileUploadSnapshot(profile, {
-      sourcePath: args.folderPath
+      sourcePath: args.folderPath,
+      variables
     });
     const folderName = path.basename(args.folderPath);
     const task = taskRepo.create({
@@ -7029,7 +7998,8 @@ function registerAllIpc() {
       sourceType: "manual",
       profileId: snapshot.profileId,
       profileName: snapshot.profileName,
-      profileSnapshot: snapshot.profileSnapshot
+      profileSnapshot: snapshot.profileSnapshot,
+      groupVariables: variables
     });
     getScannerService().queueReconcileTask(task);
     return getTaskRepo().getById(task.id);
@@ -7153,12 +8123,15 @@ function registerAllIpc() {
       const settings = getSettingsRepo().getAll();
       const profile = getProfileById(settings, args.profileId);
       const folderName = path.basename(args.sourcePath);
-      const dateName = path.basename(path.dirname(args.sourcePath));
+      const variables = extractProfilePathVariables(
+        profile,
+        args.sourcePath,
+        path.dirname(args.sourcePath)
+      );
       const context = {
         sourcePath: args.sourcePath,
         basePath: path.dirname(args.sourcePath),
-        dateName: isDateFolderName(dateName) ? dateName : void 0,
-        workDirName: folderName
+        variables
       };
       const requestedProviders = args.provider ? [args.provider] : void 0;
       const snapshot = resolveProfileUploadSnapshot(
@@ -7322,9 +8295,15 @@ function registerAllIpc() {
       const settings = settingsRepo.getAll();
       const profile = getProfileById(settings, machine.profileId);
       const localDir = path.normalize(machine.localDir).replace(/[\\/]+$/, "");
+      const variables = extractProfilePathVariables(
+        profile,
+        machine.remoteDir,
+        path.dirname(machine.remoteDir)
+      );
       const snapshot = resolveProfileUploadSnapshot(profile, {
         sourcePath: machine.remoteDir,
-        fallbackDirectoryPath: localDir
+        fallbackDirectoryPath: localDir,
+        variables
       });
       const existing = taskRepo.getByFolderPath(localDir);
       let markerMode = snapshot.mode;
@@ -7351,7 +8330,8 @@ function registerAllIpc() {
           sourceMachineId: machine.id,
           profileId: snapshot.profileId,
           profileName: snapshot.profileName,
-          profileSnapshot: snapshot.profileSnapshot
+          profileSnapshot: snapshot.profileSnapshot,
+          groupVariables: variables
         });
         getScannerService().queueReconcileTask(task);
         log.info("rsync 完成, 自动创建上传任务:", localDir);
@@ -7397,6 +8377,7 @@ function registerAllIpc() {
           profileId: markerProfileId,
           profileName: markerProfileName,
           profileSnapshot: markerProfileSnapshot,
+          groupVariables: variables,
           destinationPrefixes: markerPrefixes,
           destinationUploadRelativePaths: markerUploadRelativePaths,
           destinationPathModes: markerPathModes,
@@ -8195,12 +9176,14 @@ class TaskRunnerService {
     );
   }
   buildObjectKeyBaseContext(task) {
-    const dateContext = this.deriveDateContext(task.folderPath);
+    const groupVariables = task.groupVariables || {};
+    const variables = Object.keys(groupVariables).length > 0 ? groupVariables : this.deriveLegacyVariables(task.folderPath);
     return {
       sourcePath: task.folderPath,
       basePath: this.findProfileBasePath(task),
-      dateName: dateContext.dateName,
-      workDirName: dateContext.workDirName || task.folderName,
+      dateName: variables.date,
+      workDirName: variables.workDir || variables.session || task.folderName,
+      variables,
       folderName: task.folderName,
       profileId: task.profileId,
       profileName: task.profileName,
@@ -8213,22 +9196,17 @@ class TaskRunnerService {
       relativePath
     };
   }
-  deriveDateContext(folderPath) {
+  deriveLegacyVariables(folderPath) {
     const workDirName = path.basename(folderPath);
     const dateName = path.basename(path.dirname(folderPath));
-    return {
-      dateName: isDateFolderName(dateName) ? dateName : void 0,
-      workDirName
-    };
+    return isDateFolderName(dateName) ? { date: dateName, session: workDirName, workDir: workDirName } : { session: workDirName, workDir: workDirName };
   }
   findProfileBasePath(task) {
     const profile = task.profileSnapshot;
     if (!profile) return void 0;
-    for (const directories of Object.values(profile.scan.providerDirectories)) {
-      for (const directory of directories) {
-        if (task.folderPath === directory || task.folderPath.startsWith(`${directory}/`) || task.folderPath.startsWith(`${directory}\\`)) {
-          return directory;
-        }
+    for (const directory of getProfileSourceDirectories(profile)) {
+      if (task.folderPath === directory || task.folderPath.startsWith(`${directory}/`) || task.folderPath.startsWith(`${directory}\\`)) {
+        return directory;
       }
     }
     return void 0;

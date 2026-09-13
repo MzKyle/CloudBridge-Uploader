@@ -12,6 +12,7 @@ import {
   applyGenericConverterScanHandoff,
   normalizeGenericConverterConfig
 } from '../src/shared/generic-converter'
+import { destinationsForProviders } from '../src/shared/cloud-upload'
 import type { AppSettings, UploadProfile } from '../src/shared/types'
 import { runMigrations, setDbForTests } from '../src/main/db/database'
 import { SettingsRepo } from '../src/main/db/settings.repo'
@@ -67,6 +68,7 @@ test('generic converter scan handoff adds output root and batch pattern to profi
   const profile: UploadProfile = {
     ...baseProfile(),
     targetMode: 'both',
+    destinations: destinationsForProviders(['aliyun', 'tencent']),
     scan: {
       providerDirectories: {
         aliyun: ['/data/raw'],

@@ -52,7 +52,7 @@ export class DayFolderService {
         removeDayUpload(summary.folderPath)
       }
     } catch (err) {
-      log.error('更新日期目录标记失败:', summary.folderPath, err)
+      log.error('更新 legacy 归档组标记失败:', summary.folderPath, err)
     }
 
     this.broadcast(summary)

@@ -1,7 +1,21 @@
 import { join, normalize } from 'path'
 import { v4 as uuid } from 'uuid'
-import { determineDayFolderStatus } from '@shared/day-folder'
-import type { CloudProvider, DayFolderListQuery, DayFolderSummary, Task } from '@shared/types'
+import type {
+  CloudProvider,
+  CompletionPolicy,
+  DayFolderListQuery,
+  DayFolderSummary,
+  PathVariables,
+  Task,
+  UploadGroupStatus
+} from '@shared/types'
+import {
+  assertUploadGroupTransition,
+  deriveUploadGroupStatus,
+  mapLegacyDayFolderStatus,
+  uploadGroupStatusToDayFolderStatus
+} from '@shared/upload-group'
+import { DEFAULT_COMPLETION_POLICY } from '@shared/upload-profile'
 import { getDb } from './database'
 import { getTaskRepo } from './task.repo'
 
@@ -11,6 +25,31 @@ interface DayFolderRecord extends DayFolderSummary {
 
 function normalizeFolderPath(p: string): string {
   return normalize(p).replace(/[\\/]+$/, '')
+}
+
+function safeParseVariables(
+  value: unknown,
+  fallback: PathVariables = {}
+): PathVariables {
+  if (typeof value !== 'string' || !value) return fallback
+  try {
+    const parsed = JSON.parse(value) as unknown
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return fallback
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>)
+        .map(([key, item]) => [key, String(item)])
+    )
+  } catch {
+    return fallback
+  }
+}
+
+function safeParseProfile(value: string): Task['profileSnapshot'] {
+  try {
+    return JSON.parse(value) as NonNullable<Task['profileSnapshot']>
+  } catch {
+    return null
+  }
 }
 
 function rowToRecord(row: Record<string, unknown>): DayFolderRecord {
@@ -23,13 +62,28 @@ function rowToRecord(row: Record<string, unknown>): DayFolderRecord {
   } catch {
     childFolders = []
   }
+  const variables = safeParseVariables(row.variables_json, {
+    date: (row.date_value as string) || ''
+  })
+  const legacyStatus = row.status as DayFolderSummary['status']
+  const uploadGroupStatus =
+    (row.upload_group_status as UploadGroupStatus | undefined) ||
+    mapLegacyDayFolderStatus(legacyStatus)
 
   return {
     id: row.id as string,
     folderPath: row.folder_path as string,
     folderName: row.folder_name as string,
     date: row.date_value as string,
-    status: row.status as DayFolderSummary['status'],
+    status: legacyStatus,
+    profileId: (row.profile_id as string) || null,
+    groupKey: (row.group_key as string) || (row.date_value as string),
+    variables,
+    uploadGroupStatus,
+    discoveredAt: (row.discovered_at as string) || (row.created_at as string),
+    sealedAt: (row.sealed_at as string) || null,
+    cleanableAt: (row.cleanable_at as string) || null,
+    cleanedAt: (row.cleaned_at as string) || null,
     totalChildren: row.total_children as number,
     completedChildren: row.completed_children as number,
     totalFiles: row.total_files as number,
@@ -45,9 +99,17 @@ function rowToRecord(row: Record<string, unknown>): DayFolderRecord {
 }
 
 export class DayFolderRepo {
-  ensure(folderPath: string, dateName: string): DayFolderSummary {
+  ensure(
+    folderPath: string,
+    groupKey: string,
+    variables: PathVariables = { date: groupKey },
+    profileId?: string | null
+  ): DayFolderSummary {
     const existing = this.getRecordByPath(folderPath)
-    if (existing) return existing
+    if (existing) {
+      this.updateGroupMetadata(existing.id, groupKey, variables, profileId ?? existing.profileId)
+      return this.getById(existing.id) || existing
+    }
 
     const db = getDb()
     const id = uuid()
@@ -56,9 +118,21 @@ export class DayFolderRepo {
     db.prepare(
       `INSERT INTO day_folders (
         id, folder_path, folder_name, date_value, status, child_folders_json,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'collecting', '[]', ?, ?)`
-    ).run(id, normalizedPath, dateName, dateName, now, now)
+        created_at, updated_at, profile_id, group_key, variables_json,
+        upload_group_status, discovered_at
+      ) VALUES (?, ?, ?, ?, 'collecting', '[]', ?, ?, ?, ?, ?, 'open', ?)`
+    ).run(
+      id,
+      normalizedPath,
+      groupKey,
+      groupKey,
+      now,
+      now,
+      profileId || null,
+      groupKey,
+      JSON.stringify(variables),
+      now
+    )
     return this.getById(id)!
   }
 
@@ -119,6 +193,56 @@ export class DayFolderRepo {
     ).run(JSON.stringify(normalizedChildren), normalizedChildren.length, new Date().toISOString(), id)
   }
 
+  updateGroupMetadata(
+    id: string,
+    groupKey: string,
+    variables: PathVariables,
+    profileId?: string | null
+  ): void {
+    getDb().prepare(
+      `UPDATE day_folders
+       SET group_key = ?, variables_json = ?, profile_id = COALESCE(?, profile_id),
+           discovered_at = COALESCE(discovered_at, created_at),
+           updated_at = ?
+       WHERE id = ?`
+    ).run(
+      groupKey,
+      JSON.stringify(variables),
+      profileId || null,
+      new Date().toISOString(),
+      id
+    )
+  }
+
+  markClosing(id: string): void {
+    this.transitionStatus(id, 'closing')
+  }
+
+  markCleanable(id: string): void {
+    this.transitionStatus(id, 'cleanable')
+  }
+
+  markCleaned(id: string): void {
+    this.transitionStatus(id, 'cleaned')
+  }
+
+  transitionStatus(id: string, nextStatus: UploadGroupStatus): void {
+    const current = this.getRecordById(id)
+    if (!current) return
+    assertUploadGroupTransition(current.uploadGroupStatus, nextStatus)
+    if (current.uploadGroupStatus === nextStatus) return
+    const now = new Date().toISOString()
+    getDb().prepare(
+      `UPDATE day_folders
+       SET upload_group_status = ?,
+           sealed_at = CASE WHEN ? = 'sealed' THEN COALESCE(sealed_at, ?) ELSE sealed_at END,
+           cleanable_at = CASE WHEN ? = 'cleanable' THEN COALESCE(cleanable_at, ?) ELSE cleanable_at END,
+           cleaned_at = CASE WHEN ? = 'cleaned' THEN COALESCE(cleaned_at, ?) ELSE cleaned_at END,
+           updated_at = ?
+       WHERE id = ?`
+    ).run(nextStatus, nextStatus, now, nextStatus, now, nextStatus, now, now, id)
+  }
+
   recalculate(id: string, now = new Date()): DayFolderSummary | null {
     const record = this.getRecordById(id)
     if (!record) return null
@@ -133,12 +257,23 @@ export class DayFolderRepo {
     }
 
     const childTasks = record.childFolders.map((folderName) =>
-      latestByPath.get(normalizeFolderPath(join(record.folderPath, folderName))) || null
+      latestByPath.get(normalizeFolderPath(join(record.folderPath, folderName))) ||
+      (folderName === record.folderName
+        ? latestByPath.get(normalizeFolderPath(record.folderPath))
+        : null) ||
+      null
     )
     const childStatuses = childTasks.map((task) => task?.status || null)
+    const uploadGroupStatus = deriveUploadGroupStatus({
+      currentStatus: record.uploadGroupStatus,
+      completion: this.completionPolicyFor(record, childTasks),
+      taskStatuses: childStatuses,
+      lastActivityAt: this.latestActivityAt(record, childTasks),
+      now
+    })
     const status = record.ignored
       ? 'completed_with_skips'
-      : determineDayFolderStatus(record.date, childStatuses, now)
+      : uploadGroupStatusToDayFolderStatus(uploadGroupStatus, childStatuses)
     const completedChildren = childTasks.filter(
       (task) =>
         task?.status === 'completed' ||
@@ -154,11 +289,18 @@ export class DayFolderRepo {
       status === 'completed' || status === 'completed_with_skips'
         ? record.completedAt || updatedAt
         : null
+    const sealedAt =
+      uploadGroupStatus === 'sealed' ||
+      uploadGroupStatus === 'cleanable' ||
+      uploadGroupStatus === 'cleaned'
+        ? record.sealedAt || completedAt || updatedAt
+        : record.sealedAt
 
     getDb().prepare(
       `UPDATE day_folders SET
         status = ?, completed_children = ?, total_files = ?, uploaded_files = ?,
-        total_bytes = ?, uploaded_bytes = ?, updated_at = ?, completed_at = ?
+        total_bytes = ?, uploaded_bytes = ?, upload_group_status = ?,
+        updated_at = ?, completed_at = ?, sealed_at = ?
        WHERE id = ?`
     ).run(
       status,
@@ -167,8 +309,10 @@ export class DayFolderRepo {
       uploadedFiles,
       totalBytes,
       uploadedBytes,
+      uploadGroupStatus,
       updatedAt,
       completedAt,
+      sealedAt,
       id
     )
 
@@ -182,6 +326,9 @@ export class DayFolderRepo {
     const expectedPaths = new Set(
       record.childFolders.map((name) => normalizeFolderPath(join(record.folderPath, name)))
     )
+    if (record.childFolders.includes(record.folderName)) {
+      expectedPaths.add(normalizeFolderPath(record.folderPath))
+    }
     const latestByPath = new Map<string, Task>()
     for (const task of getTaskRepo().listByDayFolder(id)) {
       const path = normalizeFolderPath(task.folderPath)
@@ -198,11 +345,45 @@ export class DayFolderRepo {
     const cutoff = new Date(Date.now() - retentionDays * 86400000).toISOString()
     const rows = getDb().prepare(
       `SELECT * FROM day_folders
-       WHERE status IN ('completed', 'completed_with_skips')
-         AND completed_at IS NOT NULL AND completed_at < ?
-       ORDER BY completed_at ASC`
+       WHERE upload_group_status IN ('sealed', 'cleanable')
+         AND COALESCE(sealed_at, completed_at) IS NOT NULL
+         AND COALESCE(sealed_at, completed_at) < ?
+       ORDER BY COALESCE(sealed_at, completed_at) ASC`
     ).all(cutoff) as Record<string, unknown>[]
     return rows.map((row) => this.toSummary(rowToRecord(row)))
+  }
+
+  isSafeToClean(id: string): boolean {
+    const record = this.getRecordById(id)
+    if (!record) return false
+    if (record.uploadGroupStatus !== 'sealed' && record.uploadGroupStatus !== 'cleanable') {
+      return false
+    }
+
+    const blockingTasks = getDb().prepare(
+      `SELECT COUNT(*) AS count
+       FROM tasks
+       WHERE day_folder_id = ?
+         AND status IN ('pending', 'scanning', 'uploading', 'retrying', 'failed', 'paused')`
+    ).get(id) as { count: number }
+    if ((blockingTasks.count || 0) > 0) return false
+
+    const incompleteDestinations = getDb().prepare(
+      `SELECT COUNT(*) AS count
+       FROM task_destinations
+       WHERE task_id IN (SELECT id FROM tasks WHERE day_folder_id = ?)
+         AND status NOT IN ('completed', 'synced', 'skipped')`
+    ).get(id) as { count: number }
+    if ((incompleteDestinations.count || 0) > 0) return false
+
+    const incompleteFiles = getDb().prepare(
+      `SELECT COUNT(*) AS count
+       FROM task_files
+       WHERE task_id IN (SELECT id FROM tasks WHERE day_folder_id = ?)
+         AND source_status = 'present'
+         AND status NOT IN ('completed', 'skipped')`
+    ).get(id) as { count: number }
+    return (incompleteFiles.count || 0) === 0
   }
 
   clearCompleted(before?: string, provider?: CloudProvider): void {
@@ -317,6 +498,40 @@ export class DayFolderRepo {
       | Record<string, unknown>
       | undefined
     return row ? rowToRecord(row) : null
+  }
+
+  private completionPolicyFor(
+    record: DayFolderRecord,
+    childTasks: Array<Task | null>
+  ): CompletionPolicy {
+    const taskPolicy = childTasks.find((task) => task?.profileSnapshot?.completion)
+      ?.profileSnapshot?.completion
+    if (taskPolicy) return taskPolicy
+    if (record.profileId) {
+      const row = getDb().prepare(
+        `SELECT profile_snapshot_json
+         FROM tasks
+         WHERE day_folder_id = ? AND profile_snapshot_json IS NOT NULL
+         ORDER BY created_at DESC
+         LIMIT 1`
+      ).get(record.id) as { profile_snapshot_json: string } | undefined
+      const profile = row ? safeParseProfile(row.profile_snapshot_json) : null
+      if (profile?.completion) return profile.completion
+    }
+    return DEFAULT_COMPLETION_POLICY
+  }
+
+  private latestActivityAt(
+    record: DayFolderRecord,
+    childTasks: Array<Task | null>
+  ): string {
+    return childTasks.reduce(
+      (latest, task) =>
+        task && Date.parse(task.updatedAt) > Date.parse(latest)
+          ? task.updatedAt
+          : latest,
+      record.updatedAt
+    )
   }
 
   private toSummary(record: DayFolderRecord): DayFolderSummary {

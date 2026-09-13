@@ -35,10 +35,11 @@ export const BUILTIN_UPLOAD_PIPELINES: UploadPipelineManifest[] = [
   },
   {
     id: UPLOAD_PIPELINE_IDS.SANY_MODULE1_UPLOAD,
-    name: 'SANY Module1 数据采集上传',
+    name: 'Legacy SANY Module1 数据采集上传',
     version: '1.0.0',
     category: 'pipeline',
-    description: '复制到 staging 后按 SANY Module1 规则清理、分类、生成 manifest 和对象 Key。'
+    description: 'Legacy: 复制到 staging 后按 SANY Module1 规则清理、分类、生成 manifest 和对象 Key。',
+    legacy: true
   }
 ]
 

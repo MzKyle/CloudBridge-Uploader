@@ -1,4 +1,4 @@
-import { providersForMode } from './cloud-upload'
+import { providersForProfile } from './cloud-upload'
 import type {
   GenericConverterConfig,
   ProfileExtensionConfig,
@@ -145,20 +145,32 @@ export function applyGenericConverterScanHandoff(
 ): UploadProfile {
   if (!config.enabled || !config.outputRoot) return profile
 
-  const providers = providersForMode(profile.targetMode)
+  const providers = providersForProfile(profile)
   const providerDirectories = {
     aliyun: [...(profile.scan.providerDirectories.aliyun || [])],
     tencent: [...(profile.scan.providerDirectories.tencent || [])]
   }
+  const sourceRoots = profile.source?.roots?.length
+    ? [...profile.source.roots]
+    : profile.source?.root
+      ? [profile.source.root]
+      : []
 
   for (const provider of providers) {
     if (!providerDirectories[provider].includes(config.outputRoot)) {
       providerDirectories[provider].push(config.outputRoot)
     }
   }
+  if (!sourceRoots.includes(config.outputRoot)) {
+    sourceRoots.push(config.outputRoot)
+  }
 
   return {
     ...profile,
+    source: {
+      root: sourceRoots[0] || '',
+      roots: sourceRoots
+    },
     scan: {
       ...profile.scan,
       providerDirectories,
@@ -166,6 +178,14 @@ export function applyGenericConverterScanHandoff(
         profile.scan.workDirNamePattern,
         config.outputBatchNamePattern
       )
+    },
+    discovery: {
+      ...profile.discovery,
+      taskRegex: mergeWorkDirNamePattern(
+        profile.discovery.taskRegex || profile.scan.workDirNamePattern,
+        config.outputBatchNamePattern
+      ),
+      taskPattern: profile.discovery.taskRegex ? undefined : profile.discovery.taskPattern
     }
   }
 }

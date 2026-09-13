@@ -28,7 +28,10 @@ import { getDataCollectService } from './data-collect.service'
 import { getDayFolderService } from './day-folder.service'
 import { getTaskQueueService } from './task-queue.service'
 import { FileFilterService } from './file-filter.service'
-import { discoverCurrentDayDirectory } from './date-directory-discovery'
+import {
+  discoverUploadGroups,
+  type DiscoveredUploadTaskDirectory
+} from './date-directory-discovery'
 import {
   readProcessTask,
   readTmpUpload,
@@ -44,13 +47,15 @@ import type {
   UploadTargetMode,
   CloudProvider,
   AppSettings,
-  UploadPathMode
+  UploadPathMode,
+  PathVariables
 } from '@shared/types'
 
 interface PendingDir {
   path: string
   dayFolderId: string
-  dateName: string
+  groupKey: string
+  variables: PathVariables
   folderName: string
   uploadRelativePath: string
   checks: number
@@ -66,17 +71,16 @@ interface PendingDir {
   destinationObjectKeyTemplates?: TmpUploadMarker['metadata']['destinationObjectKeyTemplates']
 }
 
-const NON_WORK_DIR_REASON = '非工作次目录'
+const NON_WORK_DIR_REASON = '非任务目录'
 const INITIAL_SCAN_DELAY_MS = 3000
 const SCAN_BATCH_SIZE = 4
 const RECONCILE_BATCH_SIZE = 2
 
 /**
- * 日期目录扫描服务
- * - 配置项指向数据根目录
- * - 根目录下只识别 YYYY-MM-DD 日期目录
- * - 日期目录的直接子目录分别作为上传任务
- * - 子目录稳定后注册任务，日期跨天且所有子任务完成后封账
+ * 目录扫描服务
+ * - Source 指向本地数据根目录
+ * - Discovery Rule 发现 UploadGroup 和 UploadTask 目录
+ * - 子目录稳定后注册任务，UploadGroup 根据 CompletionPolicy 封账
  */
 export class ScannerService {
   private timer: ReturnType<typeof setInterval> | null = null
@@ -197,7 +201,6 @@ export class ScannerService {
     const activeRoots = getActiveProfileScanRoots(allSettings.profiles)
     const directories = activeRoots.map((root) => root.directory)
     const intervalMs = (scanConfig?.intervalSeconds || 30) * 1000
-    const today = this.formatLocalDate(new Date())
     const seenChildPaths = new Set<string>()
 
     let scannedDirs = 0
@@ -215,8 +218,6 @@ export class ScannerService {
         const profile = getProfileById(allSettings, root.profileId)
         const result = await this.scanRootDirectory(
           root,
-          today,
-          profile.scan.workDirNamePattern || scanConfig?.workDirNamePattern,
           seenChildPaths,
           profile
         )
@@ -258,8 +259,6 @@ export class ScannerService {
 
   private async scanRootDirectory(
     root: ActiveProfileScanRoot,
-    today: string,
-    workDirNamePattern: string | undefined,
     seenChildPaths: Set<string>,
     profile = getProfileById(getSettingsRepo().getAll(), root.profileId)
   ): Promise<{ scanned: number; newFound: number; existing: number; ignored: number; skipped: number }> {
@@ -270,18 +269,18 @@ export class ScannerService {
     let skipped = 0
 
     try {
-      const dayDirectory = await discoverCurrentDayDirectory(
+      const groups = await discoverUploadGroups(
         root.directory,
-        today,
-        workDirNamePattern
+        profile.discovery
       )
-      if (dayDirectory) {
-        const result = await this.scanDayDirectory(
+      for (let index = 0; index < groups.length; index++) {
+        const group = groups[index]
+        const result = await this.scanUploadGroupDirectory(
           root.directory,
-          dayDirectory.folderPath,
-          dayDirectory.dateName,
-          dayDirectory.childFolderNames,
-          dayDirectory.ignoredChildFolderNames,
+          group.folderPath,
+          group.groupKey,
+          group.variables,
+          group.taskDirectories,
           seenChildPaths,
           root.providers,
           profile
@@ -291,6 +290,23 @@ export class ScannerService {
         existing += result.existing
         ignored += result.ignored
         skipped += result.skipped
+
+        const shouldCloseByRollover =
+          profile.completion.mode === 'rollover' && index < groups.length - 1
+        const shouldCloseByMarker =
+          profile.completion.mode === 'marker-file' &&
+          existsSync(join(group.folderPath, profile.completion.markerFile))
+        if (shouldCloseByRollover || shouldCloseByMarker) {
+          const uploadGroup = getDayFolderRepo().getByPath(group.folderPath)
+          if (uploadGroup?.uploadGroupStatus === 'open') {
+            getDayFolderRepo().markClosing(uploadGroup.id)
+            getDayFolderService().refresh(uploadGroup.id)
+          }
+        }
+
+        if ((index + 1) % SCAN_BATCH_SIZE === 0) {
+          await this.yieldToEventLoop()
+        }
       }
     } catch (err) {
       log.error('扫描数据根目录失败:', root.directory, err)
@@ -299,21 +315,25 @@ export class ScannerService {
     return { scanned, newFound, existing, ignored, skipped }
   }
 
-  private async scanDayDirectory(
+  private async scanUploadGroupDirectory(
     sourceRootDir: string,
-    dayFolderPath: string,
-    dateName: string,
-    discoveredChildNames: string[],
-    ignoredChildNames: string[],
+    groupPath: string,
+    groupKey: string,
+    groupVariables: PathVariables,
+    discoveredTasks: DiscoveredUploadTaskDirectory[],
     seenChildPaths: Set<string>,
     providers: CloudProvider[],
     profile: AppSettings['profiles'][number]
   ): Promise<{ scanned: number; newFound: number; existing: number; ignored: number; skipped: number }> {
-    const dayFolder = getDayFolderRepo().ensure(dayFolderPath, dateName)
+    const dayFolder = getDayFolderRepo().ensure(
+      groupPath,
+      groupKey,
+      groupVariables,
+      profile.id
+    )
     const childNames = Array.from(
-      new Set([...discoveredChildNames, ...ignoredChildNames])
+      new Set(discoveredTasks.map((task) => task.folderName))
     ).sort()
-    const ignoredSet = new Set(ignoredChildNames)
     let scanned = 0
     let newFound = 0
     let existing = 0
@@ -321,14 +341,17 @@ export class ScannerService {
     let skipped = 0
 
     try {
-      for (let index = 0; index < childNames.length; index++) {
-        const childName = childNames[index]
-        const childPath = join(dayFolderPath, childName)
+      for (let index = 0; index < discoveredTasks.length; index++) {
+        const discoveredTask = discoveredTasks[index]
+        const childName = discoveredTask.folderName
+        const childPath = discoveredTask.folderPath
+        const variables = discoveredTask.ignored
+          ? groupVariables
+          : { ...groupVariables, ...discoveredTask.variables }
         const pathContext: UploadPathResolveContext = {
           sourcePath: childPath,
           basePath: sourceRootDir,
-          dateName,
-          workDirName: childName
+          variables
         }
         const targetSnapshot = this.pendingTargetSnapshot(providers, pathContext, profile)
         const uploadRelativePath = targetSnapshot.uploadRelativePath
@@ -338,13 +361,14 @@ export class ScannerService {
         const existingTask = getTaskRepo().getByFolderPath(childPath)
         if (existingTask) {
           this.attachTaskToDayFolder(existingTask, dayFolder.id)
+          getTaskRepo().updateGroupVariables(existingTask.id, variables)
           this.pendingDirs.delete(childPath)
           if (
             dayFolder.ignored &&
             existingTask.status !== 'completed' &&
             existingTask.status !== 'synced'
           ) {
-            getTaskRepo().skip(existingTask.id, '用户忽略整个日期')
+            getTaskRepo().skip(existingTask.id, '用户忽略整个归档组')
             this.broadcastTaskStatus(
               existingTask.id,
               existingTask.status,
@@ -355,12 +379,13 @@ export class ScannerService {
           continue
         }
 
-        if (ignoredSet.has(childName)) {
+        if (discoveredTask.ignored) {
           const task = this.registerIgnoredDir(
             childPath,
             childName,
             dayFolder.id,
             uploadRelativePath,
+            variables,
             providers,
             targetSnapshot
           )
@@ -376,7 +401,8 @@ export class ScannerService {
             childPath,
             childName,
             dayFolder.id,
-            dateName,
+            groupKey,
+            variables,
             processMarker,
             readTmpUpload(childPath)
           )
@@ -391,7 +417,8 @@ export class ScannerService {
           const task = this.registerNewDir({
             path: childPath,
             dayFolderId: dayFolder.id,
-            dateName,
+            groupKey,
+            variables,
             folderName: childName,
             uploadRelativePath: markerUploadRelativePath,
             checks: 0,
@@ -413,7 +440,7 @@ export class ScannerService {
               tmpMarker.metadata.destinationObjectKeyTemplates
           })
           if (dayFolder.ignored) {
-            getTaskRepo().skip(task.id, '用户忽略整个日期')
+            getTaskRepo().skip(task.id, '用户忽略整个归档组')
             this.broadcastTaskStatus(task.id, task.status, 'skipped')
           } else {
             this.queueReconcileTask(task)
@@ -423,11 +450,12 @@ export class ScannerService {
         }
 
         if (!this.pendingDirs.has(childPath)) {
-          log.info('发现新工作次目录, 注册持续同步任务:', childPath)
+          log.info('发现新任务目录, 注册持续同步任务:', childPath)
           const pending: PendingDir = {
             path: childPath,
             dayFolderId: dayFolder.id,
-            dateName,
+            groupKey,
+            variables,
             folderName: childName,
             uploadRelativePath,
             checks: 0,
@@ -444,7 +472,7 @@ export class ScannerService {
           }
           const task = this.registerNewDir(pending)
           if (dayFolder.ignored) {
-            getTaskRepo().skip(task.id, '用户忽略整个日期')
+            getTaskRepo().skip(task.id, '用户忽略整个归档组')
             this.broadcastTaskStatus(task.id, task.status, 'skipped')
           } else {
             this.queueReconcileTask(task)
@@ -457,7 +485,7 @@ export class ScannerService {
         }
       }
     } catch (err) {
-      log.error('扫描日期目录失败:', dayFolderPath, err)
+      log.error('扫描归档组失败:', groupPath, err)
     }
 
     getDayFolderService().refresh(dayFolder.id, childNames)
@@ -465,8 +493,7 @@ export class ScannerService {
   }
 
   private checkStability(): void {
-    const today = this.formatLocalDate(new Date())
-    const taskIds = getTaskRepo().listContinuouslyMonitoredTaskIds(today)
+    const taskIds = getTaskRepo().listContinuouslyMonitoredTaskIds()
     if (taskIds.length > 0) {
       const batchSize = Math.min(RECONCILE_BATCH_SIZE, taskIds.length)
       for (let i = 0; i < batchSize; i++) {
@@ -476,13 +503,6 @@ export class ScannerService {
       this.stabilityCursor = (this.stabilityCursor + batchSize) % taskIds.length
     }
     this.broadcastStatus()
-  }
-
-  private formatLocalDate(date: Date): string {
-    const year = date.getFullYear()
-    const month = String(date.getMonth() + 1).padStart(2, '0')
-    const day = String(date.getDate()).padStart(2, '0')
-    return `${year}-${month}-${day}`
   }
 
   private registerNewDir(pending: PendingDir): Task {
@@ -516,7 +536,9 @@ export class ScannerService {
       metadata: {
         source: 'local',
         dayFolderId: pending.dayFolderId,
-        date: pending.dateName,
+        date: pending.variables.date,
+        groupKey: pending.groupKey,
+        groupVariables: pending.variables,
         uploadRelativePath: pending.uploadRelativePath,
         uploadTargetMode: snapshot.mode,
         profileId: snapshot.profileId,
@@ -535,9 +557,10 @@ export class ScannerService {
       pending.folderName,
       pending.dayFolderId,
       pending.uploadRelativePath,
-      snapshot
+      snapshot,
+      pending.variables
     )
-    log.info('工作次目录已注册为上传任务:', pending.path)
+    log.info('任务目录已注册为上传任务:', pending.path)
     setTimeout(() => this.collectDataInfo(pending.path), 0)
     getDayFolderService().refresh(pending.dayFolderId)
     return task
@@ -548,6 +571,7 @@ export class ScannerService {
     folderName: string,
     dayFolderId: string,
     uploadRelativePath: string,
+    variables: PathVariables,
     providers?: CloudProvider[],
     targetSnapshot?: UploadTargetSnapshot
   ): Task {
@@ -556,11 +580,12 @@ export class ScannerService {
       folderName,
       dayFolderId,
       uploadRelativePath,
-      targetSnapshot || (providers ? getUploadTargetSnapshot(getSettingsRepo().getAll()) : undefined)
+      targetSnapshot || (providers ? getUploadTargetSnapshot(getSettingsRepo().getAll()) : undefined),
+      variables
     )
     if (task.status !== 'skipped' || task.errorMessage !== NON_WORK_DIR_REASON) {
       getTaskRepo().skip(task.id, NON_WORK_DIR_REASON)
-      log.info('已忽略非工作次目录:', dirPath)
+      log.info('已忽略非任务目录:', dirPath)
     }
     getDayFolderService().refresh(dayFolderId)
     return getTaskRepo().getById(task.id) || task
@@ -578,9 +603,9 @@ export class ScannerService {
       ignoreInitial: true,
       persistent: true,
       awaitWriteFinish: false,
-      // 只监听 根目录/日期目录/工作次目录 的目录结构。
+      // 只监听 Source/Group/Task 附近的目录结构。
       // 文件变化由稳定性检查和 30 秒全量校准处理，避免大量小文件耗尽 inotify。
-      depth: 2,
+      depth: 4,
       ignored: (path, stats) => {
         const normalized = path.replace(/\\/g, '/')
         return (
@@ -778,7 +803,8 @@ export class ScannerService {
     dirPath: string,
     folderName: string,
     dayFolderId: string,
-    dateName: string,
+    groupKey: string,
+    variables: PathVariables,
     processMarker: NonNullable<ReturnType<typeof readProcessTask>>,
     tmpMarker: ReturnType<typeof readTmpUpload>
   ): void {
@@ -815,7 +841,8 @@ export class ScannerService {
         prefixes,
         uploadRelativePaths,
         uploadRelativePath: legacyUploadRelativePath
-      }
+      },
+      variables
     )
     const taskRepo = getTaskRepo()
     taskRepo.setTotals(task.id, processMarker.totalFiles, 0)
@@ -849,7 +876,9 @@ export class ScannerService {
       metadata: {
         source: 'local',
         dayFolderId,
-        date: dateName,
+        date: variables.date,
+        groupKey,
+        groupVariables: variables,
         uploadRelativePath: legacyUploadRelativePath,
         uploadTargetMode: mode,
         destinationPrefixes: prefixes,
@@ -863,7 +892,7 @@ export class ScannerService {
       lastUpdated: new Date().toISOString()
     })
     getDayFolderService().refresh(dayFolderId)
-    log.info('信任旧完成标记并登记焊接任务:', dirPath)
+    log.info('信任旧完成标记并登记任务目录:', dirPath)
   }
 
   private ensureTaskRegistered(
@@ -871,7 +900,8 @@ export class ScannerService {
     folderName: string,
     dayFolderId: string,
     uploadRelativePath: string,
-    targetSnapshot?: UploadTargetSnapshot
+    targetSnapshot?: UploadTargetSnapshot,
+    groupVariables: PathVariables = {}
   ): Task {
     const taskRepo = getTaskRepo()
     const existing = taskRepo.getByFolderPath(dirPath)
@@ -896,7 +926,8 @@ export class ScannerService {
       sourceType: 'local',
       profileId: snapshot.profileId,
       profileName: snapshot.profileName,
-      profileSnapshot: snapshot.profileSnapshot
+      profileSnapshot: snapshot.profileSnapshot,
+      groupVariables
     })
   }
 

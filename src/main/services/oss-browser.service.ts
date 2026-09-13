@@ -1,7 +1,7 @@
 import { extname } from 'path'
 import type { AppSettings, OSSImageResult, OSSListResult, OSSObjectHead, OSSObjectItem } from '@shared/types'
 import { EXTENSION_IDS } from '@shared/plugins'
-import { providersForMode } from '@shared/cloud-upload'
+import { providersForProfile } from '@shared/cloud-upload'
 import { normalizeProfileExtensions } from '@shared/upload-profile'
 import { getSettingsRepo } from '../db/settings.repo'
 
@@ -78,7 +78,7 @@ export class OSSBrowserService {
     if (!extensions.enabledIds.includes(EXTENSION_IDS.OSS_BROWSER)) {
       throw new Error('当前 Profile 未启用 OSS 浏览器插件')
     }
-    if (!providersForMode(profile.targetMode).includes('aliyun')) {
+    if (!providersForProfile(profile).includes('aliyun')) {
       throw new Error('OSS 浏览器插件第一版仅支持包含阿里云目标的 Profile')
     }
     const config = {

@@ -491,7 +491,7 @@ export default function SSHMachines() {
                       {machine.transferMode === "sftp" ? "SFTP 直传" : "rsync"}
                     </Badge>
                     <Badge variant="outline">
-                      {profiles.find((profile) => profile.id === machine.profileId)?.name || "默认项目"}
+                      {profiles.find((profile) => profile.id === machine.profileId)?.name || "默认归档"}
                     </Badge>
                     </div>
                     <div className="text-xs text-muted-foreground">

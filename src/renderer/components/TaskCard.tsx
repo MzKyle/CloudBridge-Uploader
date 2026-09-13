@@ -68,7 +68,7 @@ export function TaskCard({
   const speed = progress?.speed ?? 0;
   const percent = totalFiles > 0 ? (uploadedFiles / totalFiles) * 100 : 0;
   const isIgnoredDirectory =
-    task.status === "skipped" && task.errorMessage === "非工作次目录";
+    task.status === "skipped" && task.errorMessage === "非任务目录";
   const errorText = destination.errorMessage || task.errorMessage;
   const canSkip =
     task.status === "pending" ||
@@ -173,7 +173,7 @@ export function TaskCard({
               </Tooltip>
             )}
             {canSkip && (
-              <Tooltip content="跳过此工作次">
+              <Tooltip content="跳过此任务目录">
                 <Button
                   variant="ghost"
                   size="icon"
@@ -182,7 +182,7 @@ export function TaskCard({
                     event.stopPropagation();
                     onCancel(task.id);
                   }}
-                  title="跳过此工作次"
+                  title="跳过此任务目录"
                 >
                   <X className="h-3.5 w-3.5" />
                 </Button>

@@ -87,7 +87,7 @@ test('renders template object keys with task and file variables', () => {
     }
   )
 
-  assert.equal(key, 'root/默认项目/2026-06-27/20-46-05/camera/a.jpg')
+  assert.equal(key, 'root/默认归档/2026-06-27/20-46-05/camera/a.jpg')
 })
 
 test('renders Windows-style paths and filename variables', () => {

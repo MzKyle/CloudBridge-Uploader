@@ -5,7 +5,10 @@ import { getTaskRepo } from '../db/task.repo'
 import { getDayFolderRepo } from '../db/day-folder.repo'
 import { getPluginRunRepo } from '../db/plugin-run.repo'
 import { getSettingsRepo } from '../db/settings.repo'
-import type { CleanupConfig } from '@shared/types'
+import { getTaskDestinationRepo } from '../db/task-destination.repo'
+import { getDayFolderService } from './day-folder.service'
+import { FileFilterService } from './file-filter.service'
+import type { CleanupConfig, Task } from '@shared/types'
 
 /**
  * 自动清理服务
@@ -69,7 +72,7 @@ export class CleanupService {
       if (tasks.length === 0 && dayFolders.length === 0 && stagingPaths.length === 0) return
 
       log.info(
-        `自动清理: 发现 ${dayFolders.length} 个日期目录、${tasks.length} 个独立任务和 ` +
+        `自动清理: 发现 ${dayFolders.length} 个归档组、${tasks.length} 个独立任务和 ` +
         `${stagingPaths.length} 个插件工作目录可清理 ` +
         `(保留天数: ${retentionDays})`
       )
@@ -80,20 +83,40 @@ export class CleanupService {
           if (!existsSync(dayFolder.folderPath)) {
             continue
           }
+          await this.refreshGroupFiles(dayFolder.id)
+          const latest = dayFolderRepo.recalculate(dayFolder.id)
+          if (!latest) continue
+          if (
+            config.onlyAfterSealed !== false &&
+            latest.uploadGroupStatus !== 'sealed' &&
+            latest.uploadGroupStatus !== 'cleanable'
+          ) {
+            continue
+          }
+          if (!dayFolderRepo.isSafeToClean(latest.id)) {
+            continue
+          }
+          dayFolderRepo.markCleanable(latest.id)
           await rm(dayFolder.folderPath, { recursive: true, force: true })
+          dayFolderRepo.markCleaned(latest.id)
           cleaned++
           log.info(
-            `自动清理: 已删除日期目录 ${dayFolder.folderPath} ` +
-            `(日期目录ID: ${dayFolder.id}, 完成于: ${dayFolder.completedAt})`
+            `自动清理: 已删除归档组 ${dayFolder.folderPath} ` +
+            `(归档组ID: ${dayFolder.id}, sealedAt: ${latest.sealedAt})`
           )
         } catch (err) {
-          log.error(`自动清理日期目录失败: ${dayFolder.folderPath}`, err)
+          log.error(`自动清理归档组失败: ${dayFolder.folderPath}`, err)
         }
       }
 
       for (const task of tasks) {
         try {
           if (!existsSync(task.folderPath)) {
+            continue
+          }
+          await this.refreshTaskFiles(task)
+          const latest = taskRepo.getById(task.id)
+          if (!latest || !this.isStandaloneTaskSafeToClean(latest)) {
             continue
           }
           await rm(task.folderPath, { recursive: true, force: true })
@@ -131,6 +154,54 @@ export class CleanupService {
     }
 
     return Math.max(0, Math.floor(config.retentionDays))
+  }
+
+  private async refreshGroupFiles(dayFolderId: string): Promise<void> {
+    const tasks = getDayFolderRepo().getChildTasks(dayFolderId)
+    await Promise.all(tasks.map((task) => this.refreshTaskFiles(task)))
+    getDayFolderService().refresh(dayFolderId)
+  }
+
+  private async refreshTaskFiles(task: Task): Promise<void> {
+    if (!existsSync(task.folderPath) || task.status === 'skipped') return
+    const settings = getSettingsRepo().getAll()
+    const requiredStableChecks =
+      task.sourceType === 'local' && task.dayFolderId
+        ? Math.max(2, settings.stability.checkCount || 2)
+        : 1
+    await getTaskRepo().reconcileFileBatches(
+      task.id,
+      new FileFilterService(
+        task.profileSnapshot?.filter || settings.filter
+      ).scanFolderBatches(task.folderPath),
+      requiredStableChecks
+    )
+  }
+
+  private isStandaloneTaskSafeToClean(task: Task): boolean {
+    if (task.status !== 'completed') return false
+    if (task.destinations.length === 0) return false
+    if (
+      task.destinations.some(
+        (destination) => destination.status !== 'completed' && destination.status !== 'synced'
+      )
+    ) {
+      return false
+    }
+
+    const summary = getTaskRepo().summarizeFiles(task.id)
+    if (summary.failedFiles > 0) return false
+    const destinationRepo = getTaskDestinationRepo()
+    for (const destination of task.destinations) {
+      const destinationSummary = destinationRepo.summarizeFileTargets(
+        task.id,
+        destination.provider
+      )
+      if (destinationSummary.failed > 0 || destinationSummary.pending > 0) {
+        return false
+      }
+    }
+    return summary.totalFiles === summary.completedFiles + summary.skippedFiles
   }
 }
 

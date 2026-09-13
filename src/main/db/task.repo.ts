@@ -12,7 +12,8 @@ import type {
   SourceType,
   UploadPathMode,
   UploadProfile,
-  UploadTargetMode
+  UploadTargetMode,
+  PathVariables
 } from '@shared/types'
 import { getTaskDestinationRepo } from './task-destination.repo'
 import { providersForMode } from '@shared/cloud-upload'
@@ -50,6 +51,7 @@ function rowToTask(
     profileId: (row.profile_id as string) || null,
     profileName: (row.profile_name as string) || null,
     profileSnapshot,
+    groupVariables: safeParseVariables(row.group_variables_json),
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
     completedAt: (row.completed_at as string) || null
@@ -61,6 +63,20 @@ function safeParseProfile(value: string): UploadProfile | null {
     return JSON.parse(value) as UploadProfile
   } catch {
     return null
+  }
+}
+
+function safeParseVariables(value: unknown): PathVariables {
+  if (typeof value !== 'string' || !value) return {}
+  try {
+    const parsed = JSON.parse(value) as unknown
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>)
+        .map(([key, item]) => [key, String(item)])
+    )
+  } catch {
+    return {}
   }
 }
 
@@ -162,31 +178,41 @@ export class TaskRepo {
     return this.rowsToTasks(rows)
   }
 
-  listContinuouslyMonitored(dateName: string): Task[] {
+  listContinuouslyMonitored(groupKey?: string): Task[] {
+    const params: unknown[] = []
+	    const groupCondition = groupKey
+	      ? 'AND COALESCE(df.group_key, df.date_value) = ?'
+	      : ''
+    if (groupKey) params.push(groupKey)
     const rows = getDb().prepare(
       `SELECT t.*
        FROM tasks t
        INNER JOIN day_folders df ON df.id = t.day_folder_id
        WHERE t.source_type = 'local'
          AND t.day_folder_id IS NOT NULL
-         AND df.date_value = ?
+         ${groupCondition}
          AND t.status NOT IN ('skipped', 'paused', 'completed')
        ORDER BY t.created_at ASC`
-    ).all(dateName) as Record<string, unknown>[]
+    ).all(...params) as Record<string, unknown>[]
     return this.rowsToTasks(rows)
   }
 
-  listContinuouslyMonitoredTaskIds(dateName: string): string[] {
+  listContinuouslyMonitoredTaskIds(groupKey?: string): string[] {
+    const params: unknown[] = []
+	    const groupCondition = groupKey
+	      ? 'AND COALESCE(df.group_key, df.date_value) = ?'
+	      : ''
+    if (groupKey) params.push(groupKey)
     const rows = getDb().prepare(
       `SELECT t.id
        FROM tasks t
        INNER JOIN day_folders df ON df.id = t.day_folder_id
        WHERE t.source_type = 'local'
          AND t.day_folder_id IS NOT NULL
-         AND df.date_value = ?
+         ${groupCondition}
          AND t.status NOT IN ('skipped', 'paused', 'completed')
        ORDER BY t.created_at ASC`
-    ).all(dateName) as Array<{ id: string }>
+    ).all(...params) as Array<{ id: string }>
     return rows.map((row) => row.id)
   }
 
@@ -258,6 +284,7 @@ export class TaskRepo {
     profileId?: string | null
     profileName?: string | null
     profileSnapshot?: UploadProfile | null
+    groupVariables?: PathVariables
   }): Task {
     const db = getDb()
     const id = uuid()
@@ -277,8 +304,9 @@ export class TaskRepo {
       `INSERT INTO tasks (
         id, folder_path, folder_name, status, oss_prefix, upload_target_mode,
         day_folder_id, upload_relative_path, source_type, source_machine_id,
-        profile_id, profile_name, profile_snapshot_json, created_at, updated_at
-      ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        profile_id, profile_name, profile_snapshot_json, group_variables_json,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       normalizedPath,
@@ -292,6 +320,7 @@ export class TaskRepo {
       params.profileId || null,
       params.profileName || null,
       params.profileSnapshot ? JSON.stringify(params.profileSnapshot) : null,
+      JSON.stringify(params.groupVariables || {}),
       now,
       now
     )
@@ -321,6 +350,14 @@ export class TaskRepo {
        SET day_folder_id = ?, upload_relative_path = ?, updated_at = ?
        WHERE id = ?`
     ).run(dayFolderId, uploadRelativePath, new Date().toISOString(), id)
+  }
+
+  updateGroupVariables(id: string, variables: PathVariables): void {
+    getDb().prepare(
+      `UPDATE tasks
+       SET group_variables_json = ?, updated_at = ?
+       WHERE id = ?`
+    ).run(JSON.stringify(variables), new Date().toISOString(), id)
   }
 
   updateUploadRelativePath(id: string, uploadRelativePath: string): void {

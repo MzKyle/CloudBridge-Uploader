@@ -12,7 +12,7 @@ import type {
   AppSettings,
   CloudProvider
 } from '@shared/types'
-import { providersForMode } from '@shared/cloud-upload'
+import { providersForProfile } from '@shared/cloud-upload'
 import {
   getProfileById,
   renderObjectKey,
@@ -151,7 +151,7 @@ export class SSHRsyncService {
     }
 
     const profile = getProfileById(settings, machine.profileId)
-    const providers = providersForMode(profile.targetMode)
+    const providers = providersForProfile(profile)
     const uploaders = new Map<CloudProvider, CloudTaskUploader>()
     try {
       for (const provider of providers) {

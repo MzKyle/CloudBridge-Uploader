@@ -38,6 +38,7 @@ import {
 } from "@shared/generic-converter";
 import type { AppSettings, CloudProvider, UploadPathMode, UploadProfile } from "@shared/types";
 import type { UploadPathPreview } from "@shared/upload-profile";
+import { destinationsForProviders, providersForMode } from "@shared/cloud-upload";
 
 type SettingsSection = "global" | "profiles" | CloudProvider;
 type ProfileSection =
@@ -49,11 +50,28 @@ type ProfileSection =
 
 const uploadPathModeOptions: Array<{ value: UploadPathMode; label: string }> = [
   { value: "target-root", label: "上传到目标路径" },
-  { value: "date-workdir", label: "日期/工作次" },
+  { value: "date-workdir", label: "Legacy 日期/任务" },
   { value: "keep-source", label: "保持本地结构" },
   { value: "last-segments", label: "保留末 N 级" },
   { value: "template", label: "对象 Key 模板" },
 ];
+
+function pathMappingFromProviderConfig(
+  config: UploadProfile["providers"][CloudProvider],
+): UploadProfile["pathMapping"] {
+  if (config.pathMode === "target-root") return { mode: "keep-relative" };
+  if (config.pathMode === "template") {
+    return { mode: "template", template: config.objectKeyTemplate || "{relativePath}" };
+  }
+  if (config.pathMode === "date-workdir") {
+    return { mode: "template", template: "{date}/{session}/{relativePath}" };
+  }
+  if (config.pathMode === "keep-source") {
+    return { mode: "template", template: "{sourceRelativePath}/{relativePath}" };
+  }
+  const count = Math.max(1, Math.min(3, config.pathSegmentCount || 1));
+  return { mode: "template", template: `{sourceLast${count}}/{relativePath}` };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -243,6 +261,17 @@ export default function Settings() {
             directories,
             providerDirectories,
           },
+          profiles: prev.profiles.map((profile) =>
+            profile.id === prev.activeProfileId
+              ? {
+                  ...profile,
+                  source: {
+                    root: directories[0] || "",
+                    roots: directories,
+                  },
+                }
+              : profile,
+          ),
         };
       });
     },
@@ -371,16 +400,20 @@ export default function Settings() {
     provider: CloudProvider,
     patch: Partial<UploadProfile["providers"][CloudProvider]>,
   ) => {
-    updateProfile(profileId, (profile) => ({
-      ...profile,
-      providers: {
-        ...profile.providers,
-        [provider]: {
-          ...profile.providers[provider],
-          ...patch,
+    updateProfile(profileId, (profile) => {
+      const providerConfig = {
+        ...profile.providers[provider],
+        ...patch,
+      };
+      return {
+        ...profile,
+        pathMapping: pathMappingFromProviderConfig(providerConfig),
+        providers: {
+          ...profile.providers,
+          [provider]: providerConfig,
         },
-      },
-    }));
+      };
+    });
   }, [updateProfile]);
 
   const updateProfilePipeline = useCallback((
@@ -481,16 +514,27 @@ export default function Settings() {
     provider: CloudProvider,
     updater: (directories: string[]) => string[],
   ) => {
-    updateProfile(profileId, (profile) => ({
-      ...profile,
-      scan: {
-        ...profile.scan,
-        providerDirectories: {
-          ...profile.scan.providerDirectories,
-          [provider]: updater(profile.scan.providerDirectories[provider] ?? []),
+    updateProfile(profileId, (profile) => {
+      const providerDirectories = {
+        ...profile.scan.providerDirectories,
+        [provider]: updater(profile.scan.providerDirectories[provider] ?? []),
+      };
+      const roots = Array.from(new Set([
+        ...providerDirectories.aliyun,
+        ...providerDirectories.tencent,
+      ]));
+      return {
+        ...profile,
+        scan: {
+          ...profile.scan,
+          providerDirectories,
         },
-      },
-    }));
+        source: {
+          root: roots[0] || "",
+          roots,
+        },
+      };
+    });
   }, [updateProfile]);
 
   const handleAddProfileScanDir = useCallback(async (
@@ -588,7 +632,7 @@ export default function Settings() {
         title={`${CLOUD_PROVIDER_LABELS[provider]}监控目录 (${directories.length})`}
       >
           <p className="text-xs text-muted-foreground">
-            根目录下仅自动扫描当天 YYYY-MM-DD 日期目录；旧日期需要手动添加具体工作次目录
+            按 Profile 的 Discovery Rule 自动发现归档组和任务目录
           </p>
           <div className="mt-2 space-y-2">
             <PathTree
@@ -641,7 +685,7 @@ export default function Settings() {
               {CLOUD_PROVIDER_LABELS[provider]}监控目录 ({directories.length})
             </div>
             <div className="text-xs text-muted-foreground">
-              自动扫描仍只识别当天日期目录下的工作次
+              自动扫描按 Profile 的 Discovery Rule 识别任务目录
             </div>
           </div>
           <Button
@@ -815,11 +859,11 @@ export default function Settings() {
               className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
             >
               <option value={UPLOAD_PIPELINE_IDS.STANDARD_UPLOAD}>通用上传</option>
-              <option value={UPLOAD_PIPELINE_IDS.SANY_MODULE1_UPLOAD}>SANY Module1 数据采集上传</option>
+              <option value={UPLOAD_PIPELINE_IDS.SANY_MODULE1_UPLOAD}>Legacy SANY Module1 数据采集上传</option>
             </select>
           </div>
           <div>
-            <Label>Module1 Station 前缀</Label>
+              <Label>Legacy Module1 Station 前缀</Label>
             <Input
               value={String(module1Config.stationPrefix || "station2")}
               disabled={!module1Enabled}
@@ -1390,6 +1434,9 @@ export default function Settings() {
                     updateProfile(editingProfile.id, (profile) => ({
                       ...profile,
                       targetMode: event.target.value as AppSettings["cloud"]["targetMode"],
+                      destinations: destinationsForProviders(
+                        providersForMode(event.target.value as AppSettings["cloud"]["targetMode"]),
+                      ),
                     }))
                   }
                   className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -1614,7 +1661,7 @@ export default function Settings() {
               />
             </div>
             <div className="col-span-2">
-              <Label>工作次目录正则</Label>
+              <Label>Legacy 任务目录正则</Label>
               <Input
                 value={local.scan.workDirNamePattern || "^\\d{2}-\\d{2}-\\d{2}$"}
                 onChange={(e) =>
@@ -1629,7 +1676,7 @@ export default function Settings() {
                 className="mt-1"
               />
               <p className="text-xs text-muted-foreground mt-1">
-                只自动上传匹配该规则的当天工作次目录；默认匹配 20-46-05 这类目录
+                旧配置兼容项；新 Profile 优先使用 Discovery Rule
               </p>
             </div>
           </div>
@@ -1700,7 +1747,7 @@ export default function Settings() {
               className="rounded"
             />
             <Label>
-              启用数采模式（自动对含焊接数据的文件夹提取元信息并展示）
+              启用 Legacy 数采模式（自动对旧工业采集目录提取元信息并展示）
             </Label>
           </div>
         </CardContent>

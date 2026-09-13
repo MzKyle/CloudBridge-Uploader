@@ -15,6 +15,7 @@ import {
   PLUGIN_IDS,
   UPLOAD_PIPELINE_IDS
 } from '../src/shared/plugins'
+import { destinationsForProviders, providersForMode } from '../src/shared/cloud-upload'
 import { normalizeProfiles } from '../src/shared/upload-profile'
 import type { AppSettings, ProfileExtensionConfig, ProfilePluginConfig, Task, UploadProfile } from '../src/shared/types'
 import { runMigrations, setDbForTests } from '../src/main/db/database'
@@ -72,11 +73,13 @@ function createProfile(input: {
   plugins?: ProfilePluginConfig
 }): UploadProfile {
   const base = cloneDefaults().profiles[0]
+  const targetMode = input.targetMode || 'aliyun'
   return {
     ...base,
     id: input.id,
     name: input.name || input.id,
-    targetMode: input.targetMode || 'aliyun',
+    targetMode,
+    destinations: destinationsForProviders(providersForMode(targetMode)),
     uploadPipeline: input.uploadPipeline || JSON.parse(JSON.stringify(DEFAULT_PROFILE_UPLOAD_PIPELINE)),
     extensions: input.extensions || cloneExtensionDefaults(),
     plugins: input.plugins

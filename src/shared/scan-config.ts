@@ -1,5 +1,5 @@
 import { isDateFolderName } from './day-folder'
-import { modeForProviders, providersForMode } from './cloud-upload'
+import { modeForProviders, providersForMode, providersForProfile } from './cloud-upload'
 import type { CloudProvider, ScanConfig, UploadProfile, UploadTargetMode } from './types'
 
 export interface ActiveScanRoot {
@@ -39,6 +39,20 @@ export function normalizeScanDirectories(directories: string[]): string[] {
     new Set(
       directories
         .map(normalizeScanDirectory)
+        .filter(Boolean)
+    )
+  )
+}
+
+export function normalizeSourceDirectory(directory: string): string {
+  return directory.trim().replace(/[\\/]+$/, '')
+}
+
+export function normalizeSourceDirectories(directories: string[]): string[] {
+  return Array.from(
+    new Set(
+      directories
+        .map(normalizeSourceDirectory)
         .filter(Boolean)
     )
   )
@@ -101,7 +115,7 @@ export function getActiveScanRoots(
   for (const provider of CLOUD_PROVIDERS) {
     if (!activeProviders.has(provider)) continue
     for (const directory of providerDirectories[provider]) {
-      const key = scanDirectoryKey(directory)
+      const key = sourceDirectoryKey(directory)
       const current = roots.get(key)
       if (current) {
         if (!current.providers.includes(provider)) {
@@ -137,33 +151,27 @@ export function getActiveProfileScanRoots(
 
   for (const profile of profiles) {
     if (!profile.enabled) continue
-    const activeProviders = new Set(providersForMode(profile.targetMode))
-    const providerDirectories = normalizeProviderDirectories(
-      profile.scan.providerDirectories
-    )
+    const activeProviders = providersForProfile(profile)
+    const sourceRoots = getProfileSourceDirectoriesForProviders(profile, activeProviders)
 
-    for (const provider of CLOUD_PROVIDERS) {
-      if (!activeProviders.has(provider)) continue
-      for (const directory of providerDirectories[provider]) {
-        const key = scanDirectoryKey(directory)
-        const current = roots.get(key)
-        if (current) {
-          if (
-            current.profileId === profile.id &&
-            !current.providers.includes(provider)
-          ) {
-            current.providers.push(provider)
-            current.providers = providersForMode(modeForProviders(current.providers))
-          }
-          continue
+    for (const directory of sourceRoots) {
+      const key = scanDirectoryKey(directory)
+      const current = roots.get(key)
+      if (current) {
+        if (current.profileId === profile.id) {
+          current.providers = providersForMode(modeForProviders([
+            ...current.providers,
+            ...activeProviders
+          ]))
         }
-        roots.set(key, {
-          directory,
-          providers: [provider],
-          profileId: profile.id,
-          profileName: profile.name
-        })
+        continue
       }
+      roots.set(key, {
+        directory,
+        providers: activeProviders,
+        profileId: profile.id,
+        profileName: profile.name
+      })
     }
   }
 
@@ -186,4 +194,48 @@ export function getProfileWatchedDirectoriesByProvider(
 
 export function scanDirectoryKey(directory: string): string {
   return normalizeScanDirectory(directory).replace(/\\/g, '/')
+}
+
+export function getProfileSourceDirectories(profile: UploadProfile): string[] {
+  const sourceRoots = normalizeSourceDirectories(
+    profile.source?.roots?.length
+      ? profile.source.roots
+      : profile.source?.root
+        ? [profile.source.root]
+        : []
+  )
+  if (sourceRoots.length > 0) return sourceRoots
+
+  const providerDirectories = normalizeProviderDirectories(
+    profile.scan?.providerDirectories
+  )
+  return normalizeScanDirectories([
+    ...providerDirectories.aliyun,
+    ...providerDirectories.tencent
+  ])
+}
+
+function getProfileSourceDirectoriesForProviders(
+  profile: UploadProfile,
+  activeProviders: CloudProvider[]
+): string[] {
+  const sourceRoots = normalizeSourceDirectories(
+    profile.source?.roots?.length
+      ? profile.source.roots
+      : profile.source?.root
+        ? [profile.source.root]
+        : []
+  )
+  if (sourceRoots.length > 0) return sourceRoots
+
+  const providerDirectories = normalizeProviderDirectories(
+    profile.scan?.providerDirectories
+  )
+  return normalizeSourceDirectories(
+    activeProviders.flatMap((provider) => providerDirectories[provider])
+  )
+}
+
+function sourceDirectoryKey(directory: string): string {
+  return normalizeSourceDirectory(directory).replace(/\\/g, '/')
 }

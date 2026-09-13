@@ -19,7 +19,7 @@ import {
   startGenericConverter,
   stopGenericConverter
 } from '@/lib/ipc-client'
-import { providersForMode } from '@shared/cloud-upload'
+import { providersForProfile } from '@shared/cloud-upload'
 import { IPC } from '@shared/ipc-channels'
 import { DEFAULT_PROFILE_EXTENSIONS, EXTENSION_IDS } from '@shared/plugins'
 import type { AppSettings, GenericConverterStatus, ProjectCapabilityStatus } from '@shared/types'
@@ -77,7 +77,7 @@ export default function Plugins() {
     [profileId, profiles]
   )
   const selectedProfileHasAliyun = useMemo(
-    () => selectedProfile ? providersForMode(selectedProfile.targetMode).includes('aliyun') : false,
+    () => selectedProfile ? providersForProfile(selectedProfile).includes('aliyun') : false,
     [selectedProfile]
   )
 

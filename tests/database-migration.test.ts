@@ -85,6 +85,82 @@ test('migration adds profile and object key template columns', () => {
   assert.ok(sshColumns.includes('profile_id'))
 })
 
+test('migration backfills legacy day folders into upload groups', () => {
+  const db = createLegacyDatabase()
+  const now = new Date().toISOString()
+  db.exec(`
+    CREATE TABLE day_folders (
+      id TEXT PRIMARY KEY,
+      folder_path TEXT NOT NULL UNIQUE,
+      folder_name TEXT NOT NULL,
+      date_value TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'collecting',
+      child_folders_json TEXT NOT NULL DEFAULT '[]',
+      total_children INTEGER NOT NULL DEFAULT 0,
+      completed_children INTEGER NOT NULL DEFAULT 0,
+      total_files INTEGER NOT NULL DEFAULT 0,
+      uploaded_files INTEGER NOT NULL DEFAULT 0,
+      total_bytes INTEGER NOT NULL DEFAULT 0,
+      uploaded_bytes INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+  `)
+  const insert = db.prepare(`
+    INSERT INTO day_folders (
+      id, folder_path, folder_name, date_value, status, created_at, updated_at, completed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  insert.run('done', '/data/2026-03-14', '2026-03-14', '2026-03-14', 'completed', now, now, now)
+  insert.run('blocked', '/data/2026-03-15', '2026-03-15', '2026-03-15', 'blocked', now, now, null)
+  insert.run('active', '/data/2026-03-16', '2026-03-16', '2026-03-16', 'processing', now, now, null)
+
+  runMigrations(db)
+  runMigrations(db)
+
+  const rows = db.prepare(`
+    SELECT id, date_value, group_key, variables_json, status, upload_group_status,
+      discovered_at, sealed_at
+    FROM day_folders
+    ORDER BY id
+  `).all()
+  assert.deepEqual(rows, [
+    {
+      id: 'active',
+      date_value: '2026-03-16',
+      group_key: '2026-03-16',
+      variables_json: '{"date":"2026-03-16"}',
+      status: 'processing',
+      upload_group_status: 'closing',
+      discovered_at: now,
+      sealed_at: null
+    },
+    {
+      id: 'blocked',
+      date_value: '2026-03-15',
+      group_key: '2026-03-15',
+      variables_json: '{"date":"2026-03-15"}',
+      status: 'blocked',
+      upload_group_status: 'error',
+      discovered_at: now,
+      sealed_at: null
+    },
+    {
+      id: 'done',
+      date_value: '2026-03-14',
+      group_key: '2026-03-14',
+      variables_json: '{"date":"2026-03-14"}',
+      status: 'completed',
+      upload_group_status: 'sealed',
+      discovered_at: now,
+      sealed_at: now
+    }
+  ])
+
+  db.close()
+})
+
 test('legacy migration skips completed file details and preserves unfinished progress', () => {
   const db = createLegacyDatabase()
   const now = new Date().toISOString()

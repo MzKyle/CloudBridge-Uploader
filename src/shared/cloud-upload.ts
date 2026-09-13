@@ -4,6 +4,7 @@ import type {
   FileStatus,
   TaskStatus,
   UploadPathMode,
+  UploadDestinationRef,
   UploadProfile,
   UploadTargetMode
 } from './types'
@@ -28,6 +29,46 @@ export interface UploadTargetSnapshot {
 export function providersForMode(mode: UploadTargetMode): CloudProvider[] {
   if (mode === 'both') return ['aliyun', 'tencent']
   return [mode]
+}
+
+export function providerForConnectionId(connectionId: string): CloudProvider | null {
+  const normalized = connectionId.trim().toLowerCase()
+  if (normalized === 'aliyun' || normalized === 'aliyun-oss') return 'aliyun'
+  if (
+    normalized === 'tencent' ||
+    normalized === 'tencent-s3' ||
+    normalized === 'tencent-turbos3'
+  ) {
+    return 'tencent'
+  }
+  return null
+}
+
+export function destinationsForProviders(
+  providers: CloudProvider[]
+): UploadDestinationRef[] {
+  return providersForMode(modeForProviders(providers)).map((provider) => ({
+    connectionId: provider,
+    required: true
+  }))
+}
+
+export function providersForDestinations(
+  destinations: UploadDestinationRef[] | undefined
+): CloudProvider[] {
+  const providers = Array.from(
+    new Set(
+      (destinations || [])
+        .map((destination) => providerForConnectionId(destination.connectionId))
+        .filter((provider): provider is CloudProvider => Boolean(provider))
+    )
+  )
+  return providers.length > 0 ? providersForMode(modeForProviders(providers)) : []
+}
+
+export function providersForProfile(profile: UploadProfile): CloudProvider[] {
+  const providers = providersForDestinations(profile.destinations)
+  return providers.length > 0 ? providers : providersForMode(profile.targetMode)
 }
 
 export function modeForProviders(providers: CloudProvider[]): UploadTargetMode {

@@ -56,14 +56,40 @@ export const DEFAULT_SETTINGS = {
   profiles: [
     {
       id: DEFAULT_UPLOAD_PROFILE_ID,
-      name: '默认项目',
+      name: '默认归档',
       enabled: true,
+      source: {
+        root: '',
+        roots: []
+      },
+      destinations: [
+        {
+          connectionId: 'aliyun',
+          required: true
+        }
+      ],
+      pathMapping: {
+        mode: 'keep-relative' as const
+      },
+      discovery: {
+        groupPattern: '{date:yyyy-MM-dd}',
+        taskPattern: '{session:HH-mm-ss}',
+        recursive: false
+      },
+      completion: {
+        mode: 'rollover' as const
+      },
+      cleanup: {
+        enabled: false,
+        retentionDays: 7,
+        onlyAfterSealed: true
+      },
       targetMode: 'aliyun' as const,
       filter: {
         whitelist: [],
         blacklist: [],
         regex: [],
-        suffixes: ['.jpg', '.jpeg', '.png', '.bmp', '.csv', '.json', '.log', '.txt']
+        suffixes: []
       },
       scan: {
         providerDirectories: {
@@ -95,7 +121,7 @@ export const DEFAULT_SETTINGS = {
     whitelist: [],
     blacklist: [],
     regex: [],
-    suffixes: ['.jpg', '.jpeg', '.png', '.bmp', '.csv', '.json', '.log', '.txt']
+    suffixes: []
   },
   webhook: {
     url: '',
@@ -116,7 +142,8 @@ export const DEFAULT_SETTINGS = {
   },
   cleanup: {
     enabled: false,
-    retentionDays: 7
+    retentionDays: 7,
+    onlyAfterSealed: true
   }
 }
 

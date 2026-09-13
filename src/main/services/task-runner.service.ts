@@ -4,6 +4,7 @@ import { BrowserWindow } from 'electron'
 import log from 'electron-log'
 import { IPC } from '@shared/ipc-channels'
 import { isDateFolderName } from '@shared/day-folder'
+import { getProfileSourceDirectories } from '@shared/scan-config'
 import { DEFAULT_SETTINGS } from '@shared/constants'
 import {
   renderObjectKey,
@@ -322,13 +323,17 @@ export class TaskRunnerService {
     )
   }
 
-  private buildObjectKeyBaseContext(task: Task): ObjectKeyBaseContext {
-    const dateContext = this.deriveDateContext(task.folderPath)
+	  private buildObjectKeyBaseContext(task: Task): ObjectKeyBaseContext {
+	    const groupVariables = task.groupVariables || {}
+	    const variables = Object.keys(groupVariables).length > 0
+	      ? groupVariables
+	      : this.deriveLegacyVariables(task.folderPath)
     return {
       sourcePath: task.folderPath,
       basePath: this.findProfileBasePath(task),
-      dateName: dateContext.dateName,
-      workDirName: dateContext.workDirName || task.folderName,
+      dateName: variables.date,
+      workDirName: variables.workDir || variables.session || task.folderName,
+      variables,
       folderName: task.folderName,
       profileId: task.profileId,
       profileName: task.profileName,
@@ -346,30 +351,24 @@ export class TaskRunnerService {
     }
   }
 
-  private deriveDateContext(folderPath: string): {
-    dateName?: string
-    workDirName?: string
-  } {
+  private deriveLegacyVariables(folderPath: string): Record<string, string> {
     const workDirName = basename(folderPath)
     const dateName = basename(dirname(folderPath))
-    return {
-      dateName: isDateFolderName(dateName) ? dateName : undefined,
-      workDirName
-    }
+    return isDateFolderName(dateName)
+      ? { date: dateName, session: workDirName, workDir: workDirName }
+      : { session: workDirName, workDir: workDirName }
   }
 
   private findProfileBasePath(task: Task): string | undefined {
     const profile = task.profileSnapshot
     if (!profile) return undefined
-    for (const directories of Object.values(profile.scan.providerDirectories)) {
-      for (const directory of directories) {
-        if (
-          task.folderPath === directory ||
-          task.folderPath.startsWith(`${directory}/`) ||
-          task.folderPath.startsWith(`${directory}\\`)
-        ) {
-          return directory
-        }
+    for (const directory of getProfileSourceDirectories(profile)) {
+      if (
+        task.folderPath === directory ||
+        task.folderPath.startsWith(`${directory}/`) ||
+        task.folderPath.startsWith(`${directory}\\`)
+      ) {
+        return directory
       }
     }
     return undefined

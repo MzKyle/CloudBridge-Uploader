@@ -8,6 +8,7 @@ import {
 import { normalizeUploadPathConfig } from '@shared/upload-path'
 import { normalizeProfiles } from '@shared/upload-profile'
 import type { AppSettings, CloudConfig, ScanConfig } from '@shared/types'
+import { getCredentialStore } from '../services/credential-store.service'
 
 function normalizeSuffixes(suffixes: string[]): string[] {
   const normalized = suffixes
@@ -15,9 +16,7 @@ function normalizeSuffixes(suffixes: string[]): string[] {
     .filter(Boolean)
     .map((suffix) => (suffix.startsWith('.') ? suffix : `.${suffix}`))
 
-  const unique = Array.from(new Set(normalized))
-  if (!unique.includes('.csv')) unique.push('.csv')
-  return unique
+  return Array.from(new Set(normalized))
 }
 
 export class SettingsRepo {
@@ -91,9 +90,10 @@ export class SettingsRepo {
         typeof parsed === 'object' &&
         parsed !== null
       ) {
-        return normalizeUploadPathConfig(
+        const normalized = normalizeUploadPathConfig(
           parsed as unknown as Record<string, unknown>
         )
+        return getCredentialStore().decryptConfig(normalized)
       }
       return parsed
     } catch {
@@ -144,9 +144,10 @@ export class SettingsRepo {
       typeof value === 'object' &&
       value !== null
     ) {
-      persistedValue = normalizeUploadPathConfig(
+      const normalized = normalizeUploadPathConfig(
         value as unknown as Record<string, unknown>
       )
+      persistedValue = getCredentialStore().encryptConfig(normalized)
     }
 
     const serialized = typeof persistedValue === 'string' ? persistedValue : JSON.stringify(persistedValue)

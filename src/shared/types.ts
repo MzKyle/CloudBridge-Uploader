@@ -32,6 +32,61 @@ export type UploadPathMode =
   | 'keep-source'
   | 'last-segments'
   | 'template'
+export type PathVariables = Record<string, string>
+export type PathMappingMode = 'keep-relative' | 'flatten' | 'template'
+export type UploadGroupStatus =
+  | 'open'
+  | 'closing'
+  | 'sealed'
+  | 'cleanable'
+  | 'cleaned'
+  | 'error'
+
+export interface UploadSourceConfig {
+  root: string
+  roots: string[]
+}
+
+export interface UploadDestinationRef {
+  connectionId: string
+  required?: boolean
+}
+
+export interface PathMappingConfig {
+  mode: PathMappingMode
+  template?: string
+}
+
+export interface DiscoveryConfig {
+  groupPattern?: string
+  taskPattern?: string
+  groupRegex?: string
+  taskRegex?: string
+  recursive?: boolean
+}
+
+export type CompletionPolicy =
+  | { mode: 'manual' }
+  | { mode: 'inactivity'; idleMinutes: number }
+  | { mode: 'marker-file'; markerFile: string }
+  | { mode: 'rollover' }
+  | { mode: 'none' }
+
+export interface CleanupPolicy {
+  enabled: boolean
+  retentionDays: number
+  onlyAfterSealed: boolean
+}
+
+export type CloudConnectionType = 'aliyun-oss' | 's3'
+
+export interface CloudConnection {
+  id: string
+  name: string
+  type: CloudConnectionType
+  provider?: CloudProvider
+  config: Record<string, unknown>
+}
 
 export interface Task {
   id: string
@@ -53,6 +108,7 @@ export interface Task {
   profileId: string | null
   profileName: string | null
   profileSnapshot: UploadProfile | null
+  groupVariables: PathVariables
   createdAt: string
   updatedAt: string
   completedAt: string | null
@@ -187,6 +243,14 @@ export interface DayFolderSummary {
   folderName: string
   date: string
   status: DayFolderStatus
+  profileId: string | null
+  groupKey: string
+  variables: PathVariables
+  uploadGroupStatus: UploadGroupStatus
+  discoveredAt: string
+  sealedAt: string | null
+  cleanableAt: string | null
+  cleanedAt: string | null
   totalChildren: number
   completedChildren: number
   totalFiles: number
@@ -301,6 +365,13 @@ export interface UploadProfile {
   id: string
   name: string
   enabled: boolean
+  source: UploadSourceConfig
+  destinations: UploadDestinationRef[]
+  pathMapping: PathMappingConfig
+  discovery: DiscoveryConfig
+  completion: CompletionPolicy
+  cleanup: CleanupPolicy
+  cloudConnections?: CloudConnection[]
   targetMode: UploadTargetMode
   filter: FilterRules
   scan: UploadProfileScanConfig
@@ -375,6 +446,7 @@ export interface UploadPipelineManifest {
   version: string
   category: 'pipeline'
   description: string
+  legacy?: boolean
 }
 
 export interface ExtensionManifest {
@@ -492,6 +564,7 @@ export interface DataCollectConfig {
 export interface CleanupConfig {
   enabled: boolean
   retentionDays: number
+  onlyAfterSealed: boolean
 }
 
 export interface AppSettings {
@@ -615,10 +688,12 @@ export interface TmpUploadMarker {
     date?: string
     uploadRelativePath?: string
     uploadTargetMode?: UploadTargetMode
-    profileId?: string
-    profileName?: string
-    profileSnapshot?: UploadProfile
-    destinationPrefixes?: Partial<Record<CloudProvider, string>>
+	    profileId?: string
+	    profileName?: string
+	    profileSnapshot?: UploadProfile
+	    groupKey?: string
+	    groupVariables?: PathVariables
+	    destinationPrefixes?: Partial<Record<CloudProvider, string>>
     destinationUploadRelativePaths?: Partial<Record<CloudProvider, string>>
     destinationPathModes?: Partial<Record<CloudProvider, UploadPathMode>>
     destinationObjectKeyTemplates?: Partial<Record<CloudProvider, string | null>>

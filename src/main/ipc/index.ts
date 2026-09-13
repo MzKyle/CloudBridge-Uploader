@@ -21,10 +21,10 @@ import { getTaskDestinationRepo } from '../db/task-destination.repo'
 import { v4 as uuid } from 'uuid'
 import type { AppSettings, CloudProvider, HistoryQuery, TaskListQuery, SSHMachine, SSHMachineInput, RsyncProgress, TransferMode, DiskUsageInfo, DayFolderListQuery, UploadPathMode, UploadProfile, UploadQueueStartInput, UploadQueueStopInput, OSSListQuery } from '@shared/types'
 import { basename, dirname, normalize } from 'path'
-import { isDateFolderName } from '@shared/day-folder'
 import { shouldRestartScannerAfterSettingsSave } from '@shared/settings-effects'
 import {
   buildObjectKeyVariables,
+  extractProfilePathVariables,
   getProfileById,
   renderObjectKey,
   resolveProfileUploadSnapshot,
@@ -89,8 +89,14 @@ export function registerAllIpc(): void {
     const settingsRepo = getSettingsRepo()
     const settings = settingsRepo.getAll()
     const profile = getProfileById(settings, args.profileId)
+    const variables = extractProfilePathVariables(
+      profile,
+      args.folderPath,
+      dirname(args.folderPath)
+    )
     const snapshot = resolveProfileUploadSnapshot(profile, {
-      sourcePath: args.folderPath
+      sourcePath: args.folderPath,
+      variables
     })
     const folderName = basename(args.folderPath)
     const task = taskRepo.create({
@@ -106,7 +112,8 @@ export function registerAllIpc(): void {
       sourceType: 'manual',
       profileId: snapshot.profileId,
       profileName: snapshot.profileName,
-      profileSnapshot: snapshot.profileSnapshot
+      profileSnapshot: snapshot.profileSnapshot,
+      groupVariables: variables
     })
     getScannerService().queueReconcileTask(task)
     return getTaskRepo().getById(task.id)
@@ -261,12 +268,15 @@ export function registerAllIpc(): void {
       const settings = getSettingsRepo().getAll()
       const profile = getProfileById(settings, args.profileId)
       const folderName = basename(args.sourcePath)
-      const dateName = basename(dirname(args.sourcePath))
+      const variables = extractProfilePathVariables(
+        profile,
+        args.sourcePath,
+        dirname(args.sourcePath)
+      )
       const context = {
         sourcePath: args.sourcePath,
         basePath: dirname(args.sourcePath),
-        dateName: isDateFolderName(dateName) ? dateName : undefined,
-        workDirName: folderName
+        variables
       }
       const requestedProviders = args.provider ? [args.provider] : undefined
       const snapshot = resolveProfileUploadSnapshot(
@@ -467,9 +477,15 @@ export function registerAllIpc(): void {
       const settings = settingsRepo.getAll()
       const profile = getProfileById(settings, machine.profileId)
       const localDir = normalize(machine.localDir).replace(/[\\/]+$/, '')
+      const variables = extractProfilePathVariables(
+        profile,
+        machine.remoteDir,
+        dirname(machine.remoteDir)
+      )
       const snapshot = resolveProfileUploadSnapshot(profile, {
         sourcePath: machine.remoteDir,
-        fallbackDirectoryPath: localDir
+        fallbackDirectoryPath: localDir,
+        variables
       })
       const existing = taskRepo.getByFolderPath(localDir)
       let markerMode = snapshot.mode
@@ -496,7 +512,8 @@ export function registerAllIpc(): void {
           sourceMachineId: machine.id,
           profileId: snapshot.profileId,
           profileName: snapshot.profileName,
-          profileSnapshot: snapshot.profileSnapshot
+          profileSnapshot: snapshot.profileSnapshot,
+          groupVariables: variables
         })
         getScannerService().queueReconcileTask(task)
         log.info('rsync 完成, 自动创建上传任务:', localDir)
@@ -548,6 +565,7 @@ export function registerAllIpc(): void {
           profileId: markerProfileId,
           profileName: markerProfileName,
           profileSnapshot: markerProfileSnapshot,
+          groupVariables: variables,
           destinationPrefixes: markerPrefixes,
           destinationUploadRelativePaths: markerUploadRelativePaths,
           destinationPathModes: markerPathModes,

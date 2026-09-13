@@ -25,6 +25,7 @@ import { useTaskStore } from "@/stores/task.store";
 import { useTaskProgress } from "@/hooks/useTaskProgress";
 import { showToast } from "@/components/ui/toast";
 import { buildPathTree } from "@/lib/path-tree";
+import { providersForProfile } from "@shared/cloud-upload";
 import {
   selectFolder,
   addFolder as addFolderApi,
@@ -96,7 +97,11 @@ export default function Dashboard() {
   useEffect(() => {
     fetchSettings()
       .then((settings) => {
-        setProvider(settings.cloud.targetMode === "tencent" ? "tencent" : "aliyun");
+        const activeProfile =
+          settings.profiles.find((profile) => profile.id === settings.activeProfileId) ||
+          settings.profiles[0];
+        const providers = activeProfile ? providersForProfile(activeProfile) : [];
+        setProvider(providers.includes("tencent") && !providers.includes("aliyun") ? "tencent" : "aliyun");
         setProfiles(settings.profiles.map((profile) => ({
           id: profile.id,
           name: profile.name,
@@ -251,7 +256,7 @@ export default function Dashboard() {
     try {
       await skipTask(taskId);
       await refreshDashboard();
-      showToast("工作次已跳过", "warning");
+      showToast("任务目录已跳过", "warning");
     } catch (err) {
       showToast(`跳过失败: ${err}`, "error");
     }
@@ -506,18 +511,18 @@ export default function Dashboard() {
     }
     if (confirmAction.kind === "ignore-day") {
       return {
-        title: "忽略该日期目录",
+        title: "忽略该归档组",
         description:
-          "确认后，该日期下未完成的工作次会被忽略，不再参与本轮自动上传。之后仍可从日期卡片恢复。",
+          "确认后，该组下未完成的任务目录会被忽略，不再参与本轮自动上传。之后仍可从归档组卡片恢复。",
         confirmText: "确认忽略",
         cancelText: "取消",
         variant: "destructive" as const,
       };
     }
     return {
-      title: "跳过此工作次",
+      title: "跳过此任务目录",
       description:
-        "确认后，该工作次会从待处理上传中跳过。需要重新监控时可在任务详情中恢复。",
+        "确认后，该任务目录会从待处理上传中跳过。需要重新监控时可在任务详情中恢复。",
       confirmText: "确认跳过",
       cancelText: "取消",
       variant: "destructive" as const,
@@ -555,7 +560,7 @@ export default function Dashboard() {
     <div className="p-6 space-y-6">
       <PageHeader
         title="任务面板"
-        description="查看上传队列、选择工作次并处理异常任务。"
+        description="查看上传队列、选择任务目录并处理异常任务。"
         actions={
           <>
           <Button
@@ -571,13 +576,13 @@ export default function Dashboard() {
             <FolderPlus className="h-4 w-4 mr-1" />
             添加文件夹
           </Button>
-          <Tooltip content="刷新任务和日期目录">
+          <Tooltip content="刷新任务和归档组">
             <Button
               variant="ghost"
               size="icon"
               className="h-9 w-9"
               onClick={handleRefresh}
-              title="刷新任务和日期目录"
+              title="刷新任务和归档组"
             >
               <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             </Button>
@@ -642,7 +647,7 @@ export default function Dashboard() {
       {hasTaskDirectories && (
         <section>
           <h2 className="text-sm font-semibold text-muted-foreground mb-3">
-            任务目录 ({dayFolders.length} 日期 / {providerTasks.length} 任务)
+            任务目录 ({dayFolders.length} 组 / {providerTasks.length} 任务)
           </h2>
           <PathTree
             nodes={taskDirectoryTree}
@@ -673,7 +678,7 @@ export default function Dashboard() {
                           checked={selectedDayFolderIds.has(dayFolder.id)}
                           onChange={() => toggleDaySelection(dayFolder.id)}
                           className="mt-5 h-4 w-4 shrink-0 rounded"
-                          aria-label={`选择日期 ${dayFolder.date}`}
+                          aria-label={`选择归档组 ${dayFolder.groupKey}`}
                         />
                         <div className="min-w-0 flex-1">
                           <DayFolderCardWithSpeed
@@ -685,7 +690,7 @@ export default function Dashboard() {
                           />
                         {childTasks.length === 0 && (
                           <div className="ml-5 border-l pl-4 text-xs text-muted-foreground py-2">
-                            尚未发现工作次
+                            尚未发现任务目录
                           </div>
                         )}
                         </div>
@@ -737,7 +742,7 @@ export default function Dashboard() {
         <EmptyState
           icon={<FolderOpen className="h-5 w-5" />}
           title="暂无待处理任务"
-          description="可以手动添加文件夹，或等待扫描器发现当天工作次目录。"
+          description="可以手动添加文件夹，或等待扫描器发现任务目录。"
           action={
             <Button size="sm" onClick={handleAddFolder}>
               <FolderPlus className="mr-1 h-4 w-4" />

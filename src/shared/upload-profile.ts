@@ -1,6 +1,13 @@
 import { DEFAULT_SETTINGS, DEFAULT_UPLOAD_PROFILE_ID, DEFAULT_WORK_DIR_NAME_PATTERN } from './constants'
 import { buildOssKey, joinOssPath } from './day-folder'
-import { modeForProviders, providersForMode, type UploadTargetSnapshot } from './cloud-upload'
+import {
+  destinationsForProviders,
+  modeForProviders,
+  providersForDestinations,
+  providersForMode,
+  providersForProfile,
+  type UploadTargetSnapshot
+} from './cloud-upload'
 import {
   DEFAULT_PROFILE_EXTENSIONS,
   DEFAULT_PROFILE_PLUGINS,
@@ -16,9 +23,12 @@ import {
   applyGenericConverterScanHandoff,
   normalizeGenericConverterConfig
 } from './generic-converter'
+import { extractDiscoveryVariables } from './discovery'
 import {
+  getProfileSourceDirectories,
   normalizeProviderDirectories,
-  normalizeScanConfig
+  normalizeScanConfig,
+  normalizeSourceDirectories
 } from './scan-config'
 import {
   DEFAULT_UPLOAD_PATH_SEGMENT_COUNT,
@@ -28,21 +38,40 @@ import {
 } from './upload-path'
 import type {
   AppSettings,
+  CloudConnection,
   CloudProvider,
+  CleanupPolicy,
+  CompletionPolicy,
+  DiscoveryConfig,
   FilterRules,
+  PathMappingConfig,
+  PathVariables,
   ProfileExtensionConfig,
   ProfilePluginConfig,
   ProfileUploadPipelineConfig,
+  UploadDestinationRef,
   UploadPipelineId,
   UploadPathMode,
   UploadProfile,
   UploadProfileProviderConfig,
+  UploadSourceConfig,
   UploadTargetMode
 } from './types'
 
 export const DEFAULT_OBJECT_KEY_TEMPLATE = '{relativePath}'
+export const DEFAULT_DISCOVERY_CONFIG: DiscoveryConfig = {
+  groupPattern: '{date:yyyy-MM-dd}',
+  taskPattern: '{session:HH-mm-ss}',
+  recursive: false
+}
+export const DEFAULT_COMPLETION_POLICY: CompletionPolicy = { mode: 'rollover' }
+export const DEFAULT_CLEANUP_POLICY: CleanupPolicy = {
+  enabled: false,
+  retentionDays: 7,
+  onlyAfterSealed: true
+}
 
-const TEMPLATE_VARIABLES = new Set([
+const BUILTIN_TEMPLATE_VARIABLES = new Set([
   'profile',
   'provider',
   'date',
@@ -51,6 +80,7 @@ const TEMPLATE_VARIABLES = new Set([
   'MM',
   'dd',
   'workDir',
+  'session',
   'HH',
   'mm',
   'ss',
@@ -91,6 +121,7 @@ export interface ObjectKeyRenderContext extends UploadPathResolveContext {
   profileName?: string | null
   folderName?: string
   relativePath: string
+  variables?: PathVariables
   createdAt?: string
 }
 
@@ -155,6 +186,23 @@ export function getProfileById(
   )
 }
 
+export function extractProfilePathVariables(
+  profile: UploadProfile,
+  sourcePath: string,
+  fallbackBasePath?: string
+): PathVariables {
+  const roots = getProfileSourceDirectories(profile)
+    .sort((a, b) => b.length - a.length)
+  for (const root of roots) {
+    if (!isPathUnderRoot(sourcePath, root)) continue
+    const variables = extractDiscoveryVariables(profile.discovery, root, sourcePath)
+    if (Object.keys(variables).length > 0) return variables
+  }
+  return fallbackBasePath
+    ? extractDiscoveryVariables(profile.discovery, fallbackBasePath, sourcePath)
+    : {}
+}
+
 export function resolveProfileUploadSnapshot(
   profile: UploadProfile,
   context: UploadPathResolveContext,
@@ -162,17 +210,24 @@ export function resolveProfileUploadSnapshot(
 ): ProfileUploadTargetSnapshot {
   const providers = requestedProviders?.length
     ? requestedProviders
-    : providersForMode(profile.targetMode)
+    : providersForProfile(profile)
   const uploadRelativePaths: Partial<Record<CloudProvider, string>> = {}
   const pathModes: Partial<Record<CloudProvider, UploadPathMode>> = {}
   const objectKeyTemplates: Partial<Record<CloudProvider, string | null>> = {}
+  const legacyProviders = {
+    aliyun: normalizeProfileProviderConfig(profile.providers?.aliyun),
+    tencent: normalizeProfileProviderConfig(profile.providers?.tencent)
+  }
   const prefixes: Record<CloudProvider, string> = {
-    aliyun: profile.providers.aliyun.prefix,
-    tencent: profile.providers.tencent.prefix
+    aliyun: legacyProviders.aliyun.prefix,
+    tencent: legacyProviders.tencent.prefix
   }
 
   for (const provider of providers) {
-    const providerConfig = profile.providers[provider]
+    const providerConfig = legacyUploadPathConfigForSnapshot(
+      profile.pathMapping,
+      legacyProviders[provider]
+    )
     const normalized = normalizeUploadPathConfig(
       providerConfig as unknown as Record<string, unknown>
     )
@@ -214,7 +269,7 @@ export function renderObjectKey(
   }
 
   const template = destination.objectKeyTemplate || ''
-  const templateErrors = validateObjectKeyTemplate(template)
+  const templateErrors = validateObjectKeyTemplate(template, context.variables)
   if (templateErrors.length > 0) {
     throw new Error(templateErrors.join('；'))
   }
@@ -242,21 +297,30 @@ export function buildObjectKeyVariables(
   const stem = dotIndex > 0 ? fileName.slice(0, dotIndex) : fileName
   const sourceSegments = pathSegments(context.sourcePath)
   const folderName = context.folderName || sourceSegments.at(-1) || ''
-  const dateParts = parseDateParts(context.dateName || '')
-  const timeParts = parseTimeParts(context.workDirName || '')
+  const discoveryVariables = context.variables || {}
+  const legacyDate = discoveryVariables.date || context.dateName || ''
+  const legacyWorkDir =
+    discoveryVariables.workDir ||
+    discoveryVariables.session ||
+    context.workDirName ||
+    ''
+  const dateParts = parseDateParts(legacyDate)
+  const timeParts = parseTimeParts(legacyWorkDir)
   const sourceRelativePath = context.basePath
     ? relativePathFromBase(context.sourcePath, context.basePath)
     : folderName
 
   return {
+    ...discoveryVariables,
     profile: context.profileName || '',
     provider,
-    date: context.dateName || '',
+    date: legacyDate,
     yy: dateParts.yy,
     yyyy: dateParts.yyyy,
     MM: dateParts.MM,
     dd: dateParts.dd,
-    workDir: context.workDirName || folderName,
+    workDir: legacyWorkDir || folderName,
+    session: discoveryVariables.session || legacyWorkDir,
     HH: timeParts.HH,
     mm: timeParts.mm,
     ss: timeParts.ss,
@@ -272,7 +336,10 @@ export function buildObjectKeyVariables(
   }
 }
 
-export function validateObjectKeyTemplate(template: string): string[] {
+export function validateObjectKeyTemplate(
+  template: string,
+  variables: PathVariables = {}
+): string[] {
   const errors: string[] = []
   const trimmed = template.trim()
   if (!trimmed) errors.push('对象 Key 模板不能为空')
@@ -282,7 +349,7 @@ export function validateObjectKeyTemplate(template: string): string[] {
     new Set(
       [...trimmed.matchAll(/\{([A-Za-z0-9_]+)\}/g)]
         .map((match) => match[1])
-        .filter((name) => !TEMPLATE_VARIABLES.has(name))
+        .filter((name) => !BUILTIN_TEMPLATE_VARIABLES.has(name) && !(name in variables))
     )
   )
   if (unknownVariables.length > 0) {
@@ -319,31 +386,39 @@ function createDefaultProfileFromSettings(settings: Partial<AppSettings>): Uploa
     },
     targetMode
   ).providerDirectories
+  const providers = {
+    aliyun: normalizeProfileProviderConfig({
+      prefix: settings.oss?.prefix || '',
+      pathMode: settings.oss?.pathMode,
+      pathSegmentCount: settings.oss?.pathSegmentCount,
+      objectKeyTemplate: DEFAULT_OBJECT_KEY_TEMPLATE
+    }),
+    tencent: normalizeProfileProviderConfig({
+      prefix: settings.tencentS3?.prefix || '',
+      pathMode: settings.tencentS3?.pathMode,
+      pathSegmentCount: settings.tencentS3?.pathSegmentCount,
+      objectKeyTemplate: DEFAULT_OBJECT_KEY_TEMPLATE
+    })
+  }
+  const activeProviders = providersForMode(targetMode)
 
   return {
     id: DEFAULT_UPLOAD_PROFILE_ID,
-    name: '默认项目',
+    name: '默认归档',
     enabled: true,
+    source: sourceFromProviderDirectories(providerDirectories),
+    destinations: destinationsForProviders(activeProviders),
+    pathMapping: pathMappingFromLegacyProviderConfig(providers[activeProviders[0]]),
+    discovery: discoveryFromLegacyScan(scan.workDirNamePattern),
+    completion: DEFAULT_COMPLETION_POLICY,
+    cleanup: normalizeCleanupPolicy(settings.cleanup, DEFAULT_CLEANUP_POLICY),
     targetMode,
     filter,
     scan: {
       providerDirectories,
       workDirNamePattern: scan.workDirNamePattern || DEFAULT_WORK_DIR_NAME_PATTERN
     },
-    providers: {
-      aliyun: normalizeProfileProviderConfig({
-        prefix: settings.oss?.prefix || '',
-        pathMode: settings.oss?.pathMode,
-        pathSegmentCount: settings.oss?.pathSegmentCount,
-        objectKeyTemplate: DEFAULT_OBJECT_KEY_TEMPLATE
-      }),
-      tencent: normalizeProfileProviderConfig({
-        prefix: settings.tencentS3?.prefix || '',
-        pathMode: settings.tencentS3?.pathMode,
-        pathSegmentCount: settings.tencentS3?.pathSegmentCount,
-        objectKeyTemplate: DEFAULT_OBJECT_KEY_TEMPLATE
-      })
-    },
+    providers,
     uploadPipeline: DEFAULT_PROFILE_UPLOAD_PIPELINE,
     extensions: buildDefaultExtensionsFromSettings(settings)
   }
@@ -370,33 +445,68 @@ function normalizeProfile(rawProfile: unknown, fallback: UploadProfile): UploadP
     raw.plugins,
     fallback.extensions
   )
+  const targetMode = normalizeTargetMode(raw.targetMode, fallback.targetMode)
+  const providerDirectories = normalizeProviderDirectories(
+    isRecord(rawScan.providerDirectories)
+      ? rawScan.providerDirectories as Partial<Record<CloudProvider, string[]>>
+      : fallback.scan.providerDirectories
+  )
+  const scan = {
+    providerDirectories,
+    workDirNamePattern:
+      typeof rawScan.workDirNamePattern === 'string' && rawScan.workDirNamePattern.trim()
+        ? rawScan.workDirNamePattern.trim()
+        : fallback.scan.workDirNamePattern
+  }
+  const providers = {
+    aliyun: normalizeProfileProviderConfig(
+      isRecord(rawProviders.aliyun) ? rawProviders.aliyun : {},
+      fallback.providers.aliyun
+    ),
+    tencent: normalizeProfileProviderConfig(
+      isRecord(rawProviders.tencent) ? rawProviders.tencent : {},
+      fallback.providers.tencent
+    )
+  }
+  const source = normalizeUploadSourceConfig(
+    raw.source,
+    sourceFromProviderDirectories(providerDirectories, fallback.source)
+  )
+  const destinationFallback = destinationsForProviders(providersForMode(targetMode))
+  const rawDestinationRefs = parseUploadDestinationRefs(raw.destinations)
+  const destinations =
+    rawDestinationRefs.length > 0 &&
+    !(targetMode !== fallback.targetMode && destinationsEqual(rawDestinationRefs, fallback.destinations))
+      ? rawDestinationRefs
+      : destinationFallback
+  const activeProviders = providersForDestinations(destinations)
+  const canonicalTargetMode = modeForProviders(
+    activeProviders.length > 0 ? activeProviders : providersForMode(targetMode)
+  )
+  const legacyPathMapping = pathMappingFromLegacyProviderConfig(
+    providers[providersForMode(canonicalTargetMode)[0]]
+  )
+  const rawPathMapping =
+    pathMappingEquals(normalizePathMappingConfig(raw.pathMapping, fallback.pathMapping), fallback.pathMapping) &&
+    !pathMappingEquals(legacyPathMapping, fallback.pathMapping)
+      ? undefined
+      : raw.pathMapping
+  const pathMapping = normalizePathMappingConfig(rawPathMapping, legacyPathMapping)
   const profile: UploadProfile = {
     id,
     name,
     enabled: typeof raw.enabled === 'boolean' ? raw.enabled : true,
-    targetMode: normalizeTargetMode(raw.targetMode, fallback.targetMode),
+    source,
+    destinations,
+    pathMapping,
+    discovery: normalizeDiscoveryConfig(raw.discovery, discoveryFromLegacyScan(scan.workDirNamePattern)),
+    completion: normalizeCompletionPolicy(raw.completion, fallback.completion),
+    cleanup: normalizeCleanupPolicy(raw.cleanup, fallback.cleanup),
+    cloudConnections: normalizeCloudConnections(raw.cloudConnections, fallback.cloudConnections),
+    targetMode: canonicalTargetMode,
     filter: normalizeFilter(isRecord(raw.filter) ? raw.filter as unknown as FilterRules : fallback.filter),
-    scan: {
-      providerDirectories: normalizeProviderDirectories(
-        isRecord(rawScan.providerDirectories)
-          ? rawScan.providerDirectories as Partial<Record<CloudProvider, string[]>>
-          : fallback.scan.providerDirectories
-      ),
-      workDirNamePattern:
-        typeof rawScan.workDirNamePattern === 'string' && rawScan.workDirNamePattern.trim()
-          ? rawScan.workDirNamePattern.trim()
-          : fallback.scan.workDirNamePattern
-    },
-    providers: {
-      aliyun: normalizeProfileProviderConfig(
-        isRecord(rawProviders.aliyun) ? rawProviders.aliyun : {},
-        fallback.providers.aliyun
-      ),
-      tencent: normalizeProfileProviderConfig(
-        isRecord(rawProviders.tencent) ? rawProviders.tencent : {},
-        fallback.providers.tencent
-      )
-    },
+    scan,
+    providers,
     uploadPipeline,
     extensions
   }
@@ -618,6 +728,275 @@ function normalizeProfileProviderConfig(
   }
 }
 
+function normalizeUploadSourceConfig(
+  rawSource: unknown,
+  fallback: UploadSourceConfig
+): UploadSourceConfig {
+  const raw = isRecord(rawSource) ? rawSource : {}
+  const roots = normalizeSourceDirectories(
+    Array.isArray(raw.roots)
+      ? raw.roots.map((item) => String(item))
+      : typeof raw.root === 'string'
+        ? [raw.root]
+        : fallback.roots
+  )
+  const sourceRoots = roots.length > 0 ? roots : normalizeSourceDirectories([fallback.root])
+  return {
+    root: typeof raw.root === 'string' && raw.root.trim()
+      ? raw.root.trim()
+      : sourceRoots[0] || fallback.root || '',
+    roots: sourceRoots
+  }
+}
+
+function sourceFromProviderDirectories(
+  providerDirectories: Record<CloudProvider, string[]>,
+  fallback?: UploadSourceConfig
+): UploadSourceConfig {
+  const roots = normalizeSourceDirectories([
+    ...providerDirectories.aliyun,
+    ...providerDirectories.tencent
+  ])
+  const fallbackRoots = fallback?.roots?.length
+    ? fallback.roots
+    : fallback?.root
+      ? [fallback.root]
+      : []
+  const sourceRoots = roots.length > 0 ? roots : normalizeStringArray(fallbackRoots)
+  return {
+    root: sourceRoots[0] || '',
+    roots: sourceRoots
+  }
+}
+
+function normalizeUploadDestinationRefs(
+  rawDestinations: unknown,
+  fallback: UploadDestinationRef[]
+): UploadDestinationRef[] {
+  const refs = parseUploadDestinationRefs(rawDestinations)
+
+  return refs.length > 0 ? refs : fallback.length > 0 ? fallback : destinationsForProviders(['aliyun'])
+}
+
+function parseUploadDestinationRefs(rawDestinations: unknown): UploadDestinationRef[] {
+  if (!Array.isArray(rawDestinations)) return []
+  return rawDestinations
+    .map((item): UploadDestinationRef | null => {
+      if (!isRecord(item) || typeof item.connectionId !== 'string') return null
+      const connectionId = item.connectionId.trim()
+      if (!connectionId) return null
+      return {
+        connectionId,
+        required: typeof item.required === 'boolean' ? item.required : true
+      }
+    })
+    .filter((item): item is UploadDestinationRef => Boolean(item))
+}
+
+function destinationsEqual(a: UploadDestinationRef[], b: UploadDestinationRef[]): boolean {
+  if (a.length !== b.length) return false
+  return a.every((destination, index) =>
+    destination.connectionId === b[index]?.connectionId &&
+    (destination.required ?? true) === (b[index]?.required ?? true)
+  )
+}
+
+function normalizeCloudConnections(
+  rawConnections: unknown,
+  fallback: CloudConnection[] | undefined
+): CloudConnection[] | undefined {
+  if (!Array.isArray(rawConnections)) return fallback
+  const connections = rawConnections
+    .map((item): CloudConnection | null => {
+      if (!isRecord(item)) return null
+      if (typeof item.id !== 'string' || !item.id.trim()) return null
+      if (typeof item.name !== 'string' || !item.name.trim()) return null
+      if (item.type !== 'aliyun-oss' && item.type !== 's3') return null
+      return {
+        id: item.id.trim(),
+        name: item.name.trim(),
+        type: item.type,
+        provider:
+          item.provider === 'aliyun' || item.provider === 'tencent'
+            ? item.provider
+            : undefined,
+        config: isRecord(item.config) ? item.config : {}
+      }
+    })
+    .filter((item): item is CloudConnection => Boolean(item))
+  return connections.length > 0 ? connections : fallback
+}
+
+function normalizePathMappingConfig(
+  rawMapping: unknown,
+  fallback: PathMappingConfig
+): PathMappingConfig {
+  const raw = isRecord(rawMapping) ? rawMapping : {}
+  const rawMode = typeof raw.mode === 'string' ? raw.mode : fallback.mode
+  const mode: PathMappingConfig['mode'] =
+    rawMode === 'flatten' || rawMode === 'template' || rawMode === 'keep-relative'
+      ? rawMode
+      : fallback.mode
+  const template =
+    typeof raw.template === 'string'
+      ? raw.template
+      : fallback.template
+
+  return mode === 'template'
+    ? { mode, template: template || DEFAULT_OBJECT_KEY_TEMPLATE }
+    : { mode }
+}
+
+function normalizeDiscoveryConfig(
+  rawDiscovery: unknown,
+  fallback: DiscoveryConfig
+): DiscoveryConfig {
+  const raw = isRecord(rawDiscovery) ? rawDiscovery : {}
+  return {
+    groupPattern: normalizeOptionalString(raw.groupPattern, fallback.groupPattern),
+    taskPattern: normalizeOptionalString(raw.taskPattern, fallback.taskPattern),
+    groupRegex: normalizeOptionalString(raw.groupRegex, fallback.groupRegex),
+    taskRegex: normalizeOptionalString(raw.taskRegex, fallback.taskRegex),
+    recursive:
+      typeof raw.recursive === 'boolean'
+        ? raw.recursive
+        : fallback.recursive ?? false
+  }
+}
+
+function discoveryFromLegacyScan(workDirNamePattern?: string): DiscoveryConfig {
+  const normalizedWorkDirPattern = workDirNamePattern?.trim()
+  if (normalizedWorkDirPattern && normalizedWorkDirPattern !== DEFAULT_WORK_DIR_NAME_PATTERN) {
+    return {
+      groupPattern: '{date:yyyy-MM-dd}',
+      taskRegex: normalizedWorkDirPattern,
+      recursive: false
+    }
+  }
+  return { ...DEFAULT_DISCOVERY_CONFIG }
+}
+
+function normalizeCompletionPolicy(
+  rawCompletion: unknown,
+  fallback: CompletionPolicy
+): CompletionPolicy {
+  const raw = isRecord(rawCompletion) ? rawCompletion : {}
+  if (raw.mode === 'manual') return { mode: 'manual' }
+  if (raw.mode === 'none') return { mode: 'none' }
+  if (raw.mode === 'rollover') return { mode: 'rollover' }
+  if (raw.mode === 'marker-file') {
+    return {
+      mode: 'marker-file',
+      markerFile:
+        typeof raw.markerFile === 'string' && raw.markerFile.trim()
+          ? raw.markerFile.trim()
+          : 'COMPLETE'
+    }
+  }
+  if (raw.mode === 'inactivity') {
+    const idleMinutes = Number(raw.idleMinutes)
+    return {
+      mode: 'inactivity',
+      idleMinutes: Number.isFinite(idleMinutes)
+        ? Math.max(0, Math.floor(idleMinutes))
+        : 60
+    }
+  }
+  return fallback
+}
+
+function normalizeCleanupPolicy(
+  rawCleanup: unknown,
+  fallback: CleanupPolicy
+): CleanupPolicy {
+  const raw = isRecord(rawCleanup) ? rawCleanup : {}
+  const retentionDays = Number(raw.retentionDays)
+  return {
+    enabled: typeof raw.enabled === 'boolean' ? raw.enabled : fallback.enabled,
+    retentionDays: Number.isFinite(retentionDays)
+      ? Math.max(0, Math.floor(retentionDays))
+      : fallback.retentionDays,
+    onlyAfterSealed:
+      typeof raw.onlyAfterSealed === 'boolean'
+        ? raw.onlyAfterSealed
+        : fallback.onlyAfterSealed
+  }
+}
+
+function pathMappingFromLegacyProviderConfig(
+  provider?: UploadProfileProviderConfig
+): PathMappingConfig {
+  if (!provider) return { mode: 'keep-relative' }
+  if (provider.pathMode === 'template') {
+    return {
+      mode: 'template',
+      template: provider.objectKeyTemplate || DEFAULT_OBJECT_KEY_TEMPLATE
+    }
+  }
+  if (provider.pathMode === 'target-root') return { mode: 'keep-relative' }
+  if (provider.pathMode === 'date-workdir') {
+    return {
+      mode: 'template',
+      template: '{date}/{session}/{relativePath}'
+    }
+  }
+  if (provider.pathMode === 'keep-source') {
+    return {
+      mode: 'template',
+      template: '{sourceRelativePath}/{relativePath}'
+    }
+  }
+  if (provider.pathMode === 'last-segments') {
+    const variable = `sourceLast${Math.max(1, Math.min(3, provider.pathSegmentCount || 1))}`
+    return {
+      mode: 'template',
+      template: `{${variable}}/{relativePath}`
+    }
+  }
+  return {
+    mode: 'keep-relative'
+  }
+}
+
+function legacyUploadPathConfigForSnapshot(
+  pathMapping: PathMappingConfig | undefined,
+  legacyProvider: UploadProfileProviderConfig
+): Pick<UploadProfileProviderConfig, 'pathMode' | 'pathSegmentCount' | 'objectKeyTemplate'> {
+  if (!pathMapping) return legacyProvider
+  if (pathMapping.mode === 'keep-relative' && legacyProvider.pathMode !== 'target-root') {
+    return legacyProvider
+  }
+  return pathMappingToLegacyProviderConfig(pathMapping)
+}
+
+function pathMappingToLegacyProviderConfig(
+  pathMapping: PathMappingConfig
+): Pick<UploadProfileProviderConfig, 'pathMode' | 'pathSegmentCount' | 'objectKeyTemplate'> {
+  if (pathMapping.mode === 'flatten') {
+    return {
+      pathMode: 'template',
+      pathSegmentCount: DEFAULT_UPLOAD_PATH_SEGMENT_COUNT,
+      objectKeyTemplate: '{filename}'
+    }
+  }
+  if (pathMapping.mode === 'template') {
+    return {
+      pathMode: 'template',
+      pathSegmentCount: DEFAULT_UPLOAD_PATH_SEGMENT_COUNT,
+      objectKeyTemplate: pathMapping.template || DEFAULT_OBJECT_KEY_TEMPLATE
+    }
+  }
+  return {
+    pathMode: 'target-root',
+    pathSegmentCount: DEFAULT_UPLOAD_PATH_SEGMENT_COUNT,
+    objectKeyTemplate: DEFAULT_OBJECT_KEY_TEMPLATE
+  }
+}
+
+function pathMappingEquals(a: PathMappingConfig, b: PathMappingConfig): boolean {
+  return a.mode === b.mode && (a.template || '') === (b.template || '')
+}
+
 function normalizeFilter(raw: FilterRules): FilterRules {
   const defaultFilter = (DEFAULT_SETTINGS as AppSettings).filter
   return {
@@ -638,9 +1017,15 @@ function normalizeSuffixes(value: unknown): string[] {
   const suffixes = normalizeStringArray(value).map((suffix) =>
     suffix.startsWith('.') ? suffix.toLowerCase() : `.${suffix.toLowerCase()}`
   )
-  const unique = Array.from(new Set(suffixes))
-  if (!unique.includes('.csv')) unique.push('.csv')
-  return unique
+  return Array.from(new Set(suffixes))
+}
+
+function normalizeOptionalString(value: unknown, fallback?: string): string | undefined {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (trimmed) return trimmed
+  }
+  return fallback
 }
 
 function normalizeTargetMode(value: unknown, fallback: UploadTargetMode): UploadTargetMode {
@@ -694,6 +1079,11 @@ function pathSegments(path: string): string[] {
     .filter((part) => part.length > 0 && part !== '.')
 }
 
+function segmentEquals(a: string, b: string): boolean {
+  if (a.endsWith(':') || b.endsWith(':')) return a.toLowerCase() === b.toLowerCase()
+  return a === b
+}
+
 function relativePathFromBase(sourcePath: string, basePath: string): string {
   const source = pathSegments(sourcePath)
   const base = pathSegments(basePath)
@@ -709,6 +1099,15 @@ function relativePathFromBase(sourcePath: string, basePath: string): string {
     return source.slice(index).join('/')
   }
   return source.at(-1) || ''
+}
+
+function isPathUnderRoot(sourcePath: string, rootPath: string): boolean {
+  const source = pathSegments(sourcePath)
+  const root = pathSegments(rootPath)
+  if (root.length === 0 || source.length < root.length) return false
+  return root.every((segment, index) =>
+    source[index] && segmentEquals(source[index], segment)
+  )
 }
 
 function isAbsolutePath(path: string): boolean {

@@ -38,7 +38,7 @@ export function DayFolderCard({
   const count = (statuses: Task["status"][]) =>
     tasks.filter((task) => statuses.includes(task.status)).length;
   const ignoredDirectoryCount = tasks.filter(
-    (task) => task.status === "skipped" && task.errorMessage === "非工作次目录",
+    (task) => task.status === "skipped" && task.errorMessage === "非任务目录",
   ).length;
   const skippedCount = count(["skipped"]) - ignoredDirectoryCount;
 
@@ -48,7 +48,7 @@ export function DayFolderCard({
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2 min-w-0">
             <CalendarDays className="h-4 w-4 text-muted-foreground" />
-            <span className="font-medium text-sm">{dayFolder.date}</span>
+            <span className="font-medium text-sm">{dayFolder.groupKey}</span>
             <Badge variant={STATUS_VARIANT[dayFolder.status]}>
               {DAY_FOLDER_STATUS_LABELS[dayFolder.status]}
             </Badge>
@@ -67,7 +67,7 @@ export function DayFolderCard({
                   onClick={() => onRestore(dayFolder.id)}
                 >
                   <Undo2 className="h-3.5 w-3.5 mr-1" />
-                  恢复日期
+                  恢复归档组
                 </Button>
               )
             ) : (
@@ -79,7 +79,7 @@ export function DayFolderCard({
                   onClick={() => onIgnore(dayFolder.id)}
                 >
                   <Ban className="h-3.5 w-3.5 mr-1" />
-                  忽略日期
+                  忽略归档组
                 </Button>
               )
             )}
@@ -89,7 +89,7 @@ export function DayFolderCard({
         <Progress value={percent} className="mb-2" />
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
           <span>
-            工作次目录 {dayFolder.completedChildren} / {dayFolder.totalChildren}
+            任务目录 {dayFolder.completedChildren} / {dayFolder.totalChildren}
           </span>
           <span>
             文件 {dayFolder.uploadedFiles} / {dayFolder.totalFiles}

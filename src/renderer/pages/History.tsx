@@ -20,6 +20,7 @@ import type {
   DayFolderSummary,
   HistoryItem,
 } from "@shared/types";
+import { providersForProfile } from "@shared/cloud-upload";
 import { DayFolderCard } from "@/components/DayFolderCard";
 
 type HistoryConfirmAction =
@@ -61,7 +62,11 @@ export default function History() {
   useEffect(() => {
     fetchSettings()
       .then((settings) => {
-        setProvider(settings.cloud.targetMode === "tencent" ? "tencent" : "aliyun");
+        const activeProfile =
+          settings.profiles.find((profile) => profile.id === settings.activeProfileId) ||
+          settings.profiles[0];
+        const providers = activeProfile ? providersForProfile(activeProfile) : [];
+        setProvider(providers.includes("tencent") && !providers.includes("aliyun") ? "tencent" : "aliyun");
       })
       .catch(() => {})
       .finally(() => setProviderReady(true));

@@ -54,7 +54,15 @@ export function runMigrations(db: Database.Database): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       completed_at TEXT,
-      ignored INTEGER NOT NULL DEFAULT 0
+      ignored INTEGER NOT NULL DEFAULT 0,
+      profile_id TEXT,
+      group_key TEXT,
+      variables_json TEXT NOT NULL DEFAULT '{}',
+      upload_group_status TEXT NOT NULL DEFAULT 'open',
+      discovered_at TEXT,
+      sealed_at TEXT,
+      cleanable_at TEXT,
+      cleaned_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS tasks (
@@ -76,6 +84,7 @@ export function runMigrations(db: Database.Database): void {
       profile_id TEXT,
       profile_name TEXT,
       profile_snapshot_json TEXT,
+      group_variables_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       completed_at TEXT,
@@ -224,6 +233,10 @@ export function runMigrations(db: Database.Database): void {
     db.exec(`ALTER TABLE tasks ADD COLUMN profile_snapshot_json TEXT`)
     log.info('迁移: tasks 表添加 profile_snapshot_json 列')
   }
+  if (!taskColumns.some((c) => c.name === 'group_variables_json')) {
+    db.exec(`ALTER TABLE tasks ADD COLUMN group_variables_json TEXT NOT NULL DEFAULT '{}'`)
+    log.info('迁移: tasks 表添加 group_variables_json 列')
+  }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_day_folder_id ON tasks(day_folder_id)`)
 
   const taskDestinationColumns = db.pragma('table_info(task_destinations)') as Array<{ name: string }>
@@ -254,6 +267,60 @@ export function runMigrations(db: Database.Database): void {
     db.exec(`ALTER TABLE day_folders ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0`)
     log.info('迁移: day_folders 表添加 ignored 列')
   }
+  const dayFolderAdditions = [
+    ['profile_id', 'TEXT'],
+    ['group_key', 'TEXT'],
+    ['variables_json', `TEXT NOT NULL DEFAULT '{}'`],
+    ['upload_group_status', `TEXT NOT NULL DEFAULT 'open'`],
+    ['discovered_at', 'TEXT'],
+    ['sealed_at', 'TEXT'],
+    ['cleanable_at', 'TEXT'],
+    ['cleaned_at', 'TEXT']
+  ] as const
+  for (const [name, definition] of dayFolderAdditions) {
+    if (!dayFolderColumns.some((column) => column.name === name)) {
+      db.exec(`ALTER TABLE day_folders ADD COLUMN ${name} ${definition}`)
+      log.info(`迁移: day_folders 表添加 ${name} 列`)
+    }
+  }
+  db.exec(`
+    UPDATE day_folders
+    SET group_key = COALESCE(group_key, date_value),
+        variables_json = CASE
+          WHEN variables_json IS NULL OR variables_json = '{}' THEN
+            '{"date":"' || replace(date_value, '"', '\\"') || '"}'
+          ELSE variables_json
+        END,
+        upload_group_status = CASE
+          WHEN status IN ('completed', 'completed_with_skips')
+            AND (upload_group_status IS NULL OR upload_group_status = '' OR upload_group_status = 'open') THEN 'sealed'
+          WHEN status = 'blocked'
+            AND (upload_group_status IS NULL OR upload_group_status = '' OR upload_group_status = 'open') THEN 'error'
+          WHEN status = 'processing'
+            AND (upload_group_status IS NULL OR upload_group_status = '' OR upload_group_status = 'open') THEN 'closing'
+          WHEN upload_group_status IS NULL OR upload_group_status = '' THEN 'open'
+          ELSE upload_group_status
+        END,
+        discovered_at = COALESCE(discovered_at, created_at),
+        sealed_at = CASE
+          WHEN sealed_at IS NULL AND status IN ('completed', 'completed_with_skips') THEN completed_at
+          ELSE sealed_at
+        END
+  `)
+  db.exec(`
+    UPDATE tasks
+    SET group_variables_json = COALESCE((
+      SELECT variables_json
+      FROM day_folders
+      WHERE day_folders.id = tasks.day_folder_id
+    ), group_variables_json, '{}')
+    WHERE day_folder_id IS NOT NULL
+      AND (group_variables_json IS NULL OR group_variables_json = '{}')
+  `)
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_day_folders_upload_group_status
+    ON day_folders(upload_group_status)
+  `)
 
   const taskFileColumns = db.pragma('table_info(task_files)') as Array<{ name: string }>
   const taskFileAdditions = [
