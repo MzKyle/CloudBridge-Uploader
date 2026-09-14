@@ -228,6 +228,10 @@ export function registerAllIpc(): void {
     return getDayFolderService().refresh(args.id)
   })
 
+  ipcMain.handle(IPC.UPLOAD_GROUP_CLOSE, (_event, args: { id: string }) => {
+    return getDayFolderService().requestCloseUploadGroup(args.id)
+  })
+
   // ---- 设置 ----
   ipcMain.handle(IPC.SETTINGS_GET_ALL, () => {
     return getSettingsRepo().getAll()

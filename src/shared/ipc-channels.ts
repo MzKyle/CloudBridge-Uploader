@@ -29,6 +29,7 @@ export const IPC = {
   DAY_FOLDER_DELETE: 'day-folder:delete',
   DAY_FOLDER_IGNORE: 'day-folder:ignore',
   DAY_FOLDER_RESTORE: 'day-folder:restore',
+  UPLOAD_GROUP_CLOSE: 'upload-group:close',
   DAY_FOLDER_EVENT: 'day-folder:event',
 
   // 扫描器

@@ -18,6 +18,7 @@ import {
 import { DEFAULT_COMPLETION_POLICY } from '@shared/upload-profile'
 import { getDb } from './database'
 import { getTaskRepo } from './task.repo'
+import { getSettingsRepo } from './settings.repo'
 
 interface DayFolderRecord extends DayFolderSummary {
   childFolders: string[]
@@ -52,6 +53,10 @@ function safeParseProfile(value: string): Task['profileSnapshot'] {
   }
 }
 
+function arraysEqual(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
 function rowToRecord(row: Record<string, unknown>): DayFolderRecord {
   let childFolders: string[] = []
   try {
@@ -69,6 +74,12 @@ function rowToRecord(row: Record<string, unknown>): DayFolderRecord {
   const uploadGroupStatus =
     (row.upload_group_status as UploadGroupStatus | undefined) ||
     mapLegacyDayFolderStatus(legacyStatus)
+  const discoveredAt = (row.discovered_at as string) || (row.created_at as string)
+  const lastContentActivityAt =
+    (row.last_content_activity_at as string) ||
+    discoveredAt ||
+    (row.updated_at as string) ||
+    (row.created_at as string)
 
   return {
     id: row.id as string,
@@ -80,7 +91,8 @@ function rowToRecord(row: Record<string, unknown>): DayFolderRecord {
     groupKey: (row.group_key as string) || (row.date_value as string),
     variables,
     uploadGroupStatus,
-    discoveredAt: (row.discovered_at as string) || (row.created_at as string),
+    discoveredAt,
+    lastContentActivityAt,
     sealedAt: (row.sealed_at as string) || null,
     cleanableAt: (row.cleanable_at as string) || null,
     cleanedAt: (row.cleaned_at as string) || null,
@@ -119,8 +131,8 @@ export class DayFolderRepo {
       `INSERT INTO day_folders (
         id, folder_path, folder_name, date_value, status, child_folders_json,
         created_at, updated_at, profile_id, group_key, variables_json,
-        upload_group_status, discovered_at
-      ) VALUES (?, ?, ?, ?, 'collecting', '[]', ?, ?, ?, ?, ?, 'open', ?)`
+        upload_group_status, discovered_at, last_content_activity_at
+      ) VALUES (?, ?, ?, ?, 'collecting', '[]', ?, ?, ?, ?, ?, 'open', ?, ?)`
     ).run(
       id,
       normalizedPath,
@@ -131,6 +143,7 @@ export class DayFolderRepo {
       profileId || null,
       groupKey,
       JSON.stringify(variables),
+      now,
       now
     )
     return this.getById(id)!
@@ -186,11 +199,22 @@ export class DayFolderRepo {
     const normalizedChildren = Array.from(
       new Set([...(existing?.childFolders || []), ...childFolders])
     ).sort()
+    const contentChanged = !arraysEqual(normalizedChildren, existing?.childFolders || [])
+    const now = new Date().toISOString()
     db.prepare(
       `UPDATE day_folders
-       SET child_folders_json = ?, total_children = ?, updated_at = ?
+       SET child_folders_json = ?, total_children = ?,
+           last_content_activity_at = CASE WHEN ? = 1 THEN ? ELSE last_content_activity_at END,
+           updated_at = ?
        WHERE id = ?`
-    ).run(JSON.stringify(normalizedChildren), normalizedChildren.length, new Date().toISOString(), id)
+    ).run(
+      JSON.stringify(normalizedChildren),
+      normalizedChildren.length,
+      contentChanged ? 1 : 0,
+      now,
+      now,
+      id
+    )
   }
 
   updateGroupMetadata(
@@ -224,6 +248,14 @@ export class DayFolderRepo {
 
   markCleaned(id: string): void {
     this.transitionStatus(id, 'cleaned')
+  }
+
+  markContentActivity(id: string, occurredAt = new Date().toISOString()): void {
+    getDb().prepare(
+      `UPDATE day_folders
+       SET last_content_activity_at = ?, updated_at = ?
+       WHERE id = ?`
+    ).run(occurredAt, occurredAt, id)
   }
 
   transitionStatus(id: string, nextStatus: UploadGroupStatus): void {
@@ -268,7 +300,7 @@ export class DayFolderRepo {
       currentStatus: record.uploadGroupStatus,
       completion: this.completionPolicyFor(record, childTasks),
       taskStatuses: childStatuses,
-      lastActivityAt: this.latestActivityAt(record, childTasks),
+      lastContentActivityAt: record.lastContentActivityAt,
       now
     })
     const status = record.ignored
@@ -350,6 +382,16 @@ export class DayFolderRepo {
          AND COALESCE(sealed_at, completed_at) < ?
        ORDER BY COALESCE(sealed_at, completed_at) ASC`
     ).all(cutoff) as Record<string, unknown>[]
+    return rows.map((row) => this.toSummary(rowToRecord(row)))
+  }
+
+  listCleanupCandidates(): DayFolderSummary[] {
+    const rows = getDb().prepare(
+      `SELECT * FROM day_folders
+       WHERE upload_group_status IN ('sealed', 'cleanable')
+         AND COALESCE(sealed_at, completed_at) IS NOT NULL
+       ORDER BY COALESCE(sealed_at, completed_at) ASC`
+    ).all() as Record<string, unknown>[]
     return rows.map((row) => this.toSummary(rowToRecord(row)))
   }
 
@@ -507,31 +549,22 @@ export class DayFolderRepo {
     const taskPolicy = childTasks.find((task) => task?.profileSnapshot?.completion)
       ?.profileSnapshot?.completion
     if (taskPolicy) return taskPolicy
+    const row = getDb().prepare(
+      `SELECT profile_snapshot_json
+       FROM tasks
+       WHERE day_folder_id = ? AND profile_snapshot_json IS NOT NULL
+       ORDER BY created_at ASC
+       LIMIT 1`
+    ).get(record.id) as { profile_snapshot_json: string } | undefined
+    const profile = row ? safeParseProfile(row.profile_snapshot_json) : null
+    if (profile?.completion) return profile.completion
     if (record.profileId) {
-      const row = getDb().prepare(
-        `SELECT profile_snapshot_json
-         FROM tasks
-         WHERE day_folder_id = ? AND profile_snapshot_json IS NOT NULL
-         ORDER BY created_at DESC
-         LIMIT 1`
-      ).get(record.id) as { profile_snapshot_json: string } | undefined
-      const profile = row ? safeParseProfile(row.profile_snapshot_json) : null
-      if (profile?.completion) return profile.completion
+      const currentProfile = getSettingsRepo()
+        .getAll()
+        .profiles.find((item) => item.id === record.profileId)
+      if (currentProfile?.completion) return currentProfile.completion
     }
     return DEFAULT_COMPLETION_POLICY
-  }
-
-  private latestActivityAt(
-    record: DayFolderRecord,
-    childTasks: Array<Task | null>
-  ): string {
-    return childTasks.reduce(
-      (latest, task) =>
-        task && Date.parse(task.updatedAt) > Date.parse(latest)
-          ? task.updatedAt
-          : latest,
-      record.updatedAt
-    )
   }
 
   private toSummary(record: DayFolderRecord): DayFolderSummary {

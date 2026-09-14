@@ -88,6 +88,10 @@ export async function restoreDayFolder(id: string): Promise<DayFolderSummary> {
   return (await api.invoke(IPC.DAY_FOLDER_RESTORE, { id })) as DayFolderSummary
 }
 
+export async function closeUploadGroup(id: string): Promise<DayFolderSummary> {
+  return (await api.invoke(IPC.UPLOAD_GROUP_CLOSE, { id })) as DayFolderSummary
+}
+
 // ---- 扫描器 ----
 export async function getScannerStatus(): Promise<ScannerStatus> {
   return (await api.invoke(IPC.SCANNER_STATUS)) as ScannerStatus

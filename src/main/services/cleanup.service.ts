@@ -8,6 +8,8 @@ import { getSettingsRepo } from '../db/settings.repo'
 import { getTaskDestinationRepo } from '../db/task-destination.repo'
 import { getDayFolderService } from './day-folder.service'
 import { FileFilterService } from './file-filter.service'
+import { resolveCleanupPolicyForGroup } from './upload-group-policy'
+import { assertSafeCleanupPath } from '../utils/cleanup-path-safety'
 import type { CleanupConfig, Task } from '@shared/types'
 
 /**
@@ -58,16 +60,19 @@ export class CleanupService {
 
     try {
       const settings = getSettingsRepo()
-      const config = settings.get<CleanupConfig>('cleanup')
-      if (!config?.enabled) return
+      const config = settings.getAll().cleanup
 
       const retentionDays = this.normalizeRetentionDays(config)
       const taskRepo = getTaskRepo()
       const dayFolderRepo = getDayFolderRepo()
       const pluginRunRepo = getPluginRunRepo()
-      const tasks = taskRepo.getCompletedForCleanup(retentionDays)
-      const dayFolders = dayFolderRepo.getCompletedForCleanup(retentionDays)
-      const stagingPaths = pluginRunRepo.listStagingPathsForCompletedTasks(retentionDays)
+      const tasks = config.enabled
+        ? taskRepo.getCompletedForCleanup(retentionDays)
+        : []
+      const dayFolders = dayFolderRepo.listCleanupCandidates()
+      const stagingPaths = config.enabled
+        ? pluginRunRepo.listStagingPathsForCompletedTasks(retentionDays)
+        : []
 
       if (tasks.length === 0 && dayFolders.length === 0 && stagingPaths.length === 0) return
 
@@ -80,29 +85,37 @@ export class CleanupService {
       let cleaned = 0
       for (const dayFolder of dayFolders) {
         try {
-          if (!existsSync(dayFolder.folderPath)) {
+          const resolved = resolveCleanupPolicyForGroup(dayFolder)
+          if (!resolved.policy.enabled) continue
+
+          const groupRetentionDays = this.normalizeRetentionDays(resolved.policy)
+          if (!this.retentionExpired(dayFolder.sealedAt || dayFolder.completedAt, groupRetentionDays)) {
             continue
           }
+          if (!existsSync(dayFolder.folderPath)) continue
+
           await this.refreshGroupFiles(dayFolder.id)
           const latest = dayFolderRepo.recalculate(dayFolder.id)
           if (!latest) continue
-          if (
-            config.onlyAfterSealed !== false &&
-            latest.uploadGroupStatus !== 'sealed' &&
-            latest.uploadGroupStatus !== 'cleanable'
-          ) {
-            continue
-          }
+          // onlyAfterSealed is a deprecated compatibility field. Runtime cleanup
+          // always keeps sealed/cleanable as a hard safety invariant.
+          if (!this.isSealedCleanupCandidate(latest)) continue
+          if (!this.retentionExpired(latest.sealedAt || latest.completedAt, groupRetentionDays)) continue
           if (!dayFolderRepo.isSafeToClean(latest.id)) {
             continue
           }
+          await assertSafeCleanupPath({
+            targetPath: latest.folderPath,
+            sourceRoots: resolved.sourceRoots
+          })
           dayFolderRepo.markCleanable(latest.id)
-          await rm(dayFolder.folderPath, { recursive: true, force: true })
+          await rm(latest.folderPath, { recursive: true, force: true })
           dayFolderRepo.markCleaned(latest.id)
           cleaned++
           log.info(
-            `自动清理: 已删除归档组 ${dayFolder.folderPath} ` +
-            `(归档组ID: ${dayFolder.id}, sealedAt: ${latest.sealedAt})`
+            `自动清理: 已删除归档组 ${latest.folderPath} ` +
+            `(归档组ID: ${latest.id}, sealedAt: ${latest.sealedAt}, ` +
+            `保留天数: ${groupRetentionDays})`
           )
         } catch (err) {
           log.error(`自动清理归档组失败: ${dayFolder.folderPath}`, err)
@@ -154,6 +167,17 @@ export class CleanupService {
     }
 
     return Math.max(0, Math.floor(config.retentionDays))
+  }
+
+  private retentionExpired(timestamp: string | null, retentionDays: number): boolean {
+    if (!timestamp) return false
+    const time = Date.parse(timestamp)
+    if (!Number.isFinite(time)) return false
+    return time < Date.now() - retentionDays * 86400000
+  }
+
+  private isSealedCleanupCandidate(group: { uploadGroupStatus: string }): boolean {
+    return group.uploadGroupStatus === 'sealed' || group.uploadGroupStatus === 'cleanable'
   }
 
   private async refreshGroupFiles(dayFolderId: string): Promise<void> {

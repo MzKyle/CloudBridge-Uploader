@@ -76,6 +76,8 @@ test('migration adds profile and object key template columns', () => {
     .map((column) => column.name)
   const sshColumns = (db.pragma('table_info(ssh_machines)') as Array<{ name: string }>)
     .map((column) => column.name)
+  const dayFolderColumns = (db.pragma('table_info(day_folders)') as Array<{ name: string }>)
+    .map((column) => column.name)
 
   assert.ok(taskColumns.includes('profile_id'))
   assert.ok(taskColumns.includes('profile_name'))
@@ -83,6 +85,7 @@ test('migration adds profile and object key template columns', () => {
   assert.ok(destinationColumns.includes('path_mode'))
   assert.ok(destinationColumns.includes('object_key_template'))
   assert.ok(sshColumns.includes('profile_id'))
+  assert.ok(dayFolderColumns.includes('last_content_activity_at'))
 })
 
 test('migration backfills legacy day folders into upload groups', () => {
@@ -121,7 +124,7 @@ test('migration backfills legacy day folders into upload groups', () => {
 
   const rows = db.prepare(`
     SELECT id, date_value, group_key, variables_json, status, upload_group_status,
-      discovered_at, sealed_at
+      discovered_at, last_content_activity_at, sealed_at
     FROM day_folders
     ORDER BY id
   `).all()
@@ -134,6 +137,7 @@ test('migration backfills legacy day folders into upload groups', () => {
       status: 'processing',
       upload_group_status: 'closing',
       discovered_at: now,
+      last_content_activity_at: now,
       sealed_at: null
     },
     {
@@ -144,6 +148,7 @@ test('migration backfills legacy day folders into upload groups', () => {
       status: 'blocked',
       upload_group_status: 'error',
       discovered_at: now,
+      last_content_activity_at: now,
       sealed_at: null
     },
     {
@@ -154,6 +159,7 @@ test('migration backfills legacy day folders into upload groups', () => {
       status: 'completed',
       upload_group_status: 'sealed',
       discovered_at: now,
+      last_content_activity_at: now,
       sealed_at: now
     }
   ])

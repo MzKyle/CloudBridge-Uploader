@@ -75,6 +75,7 @@ export type CompletionPolicy =
 export interface CleanupPolicy {
   enabled: boolean
   retentionDays: number
+  /** @deprecated 自动清理运行时始终强制 sealed/cleanable，保留字段仅用于旧配置兼容。 */
   onlyAfterSealed: boolean
 }
 
@@ -248,6 +249,7 @@ export interface DayFolderSummary {
   variables: PathVariables
   uploadGroupStatus: UploadGroupStatus
   discoveredAt: string
+  lastContentActivityAt: string
   sealedAt: string | null
   cleanableAt: string | null
   cleanedAt: string | null

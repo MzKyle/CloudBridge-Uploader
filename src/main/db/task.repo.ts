@@ -80,6 +80,15 @@ function safeParseVariables(value: unknown): PathVariables {
   }
 }
 
+function markDayFolderContentActivity(dayFolderId: string | null | undefined, occurredAt: string): void {
+  if (!dayFolderId) return
+  getDb().prepare(
+    `UPDATE day_folders
+     SET last_content_activity_at = ?, updated_at = ?
+     WHERE id = ?`
+  ).run(occurredAt, occurredAt, dayFolderId)
+}
+
 const UPLOAD_QUEUE_CANDIDATE_STATUSES: TaskStatus[] = [
   'pending',
   'scanning',
@@ -333,23 +342,28 @@ export class TaskRepo {
       params.destinationPathModes,
       params.destinationObjectKeyTemplates
     )
+    markDayFolderContentActivity(params.dayFolderId, now)
     return this.getById(id)!
   }
 
   updateDayFolderId(id: string, dayFolderId: string): void {
+    const now = new Date().toISOString()
     getDb().prepare(
       `UPDATE tasks
        SET day_folder_id = ?, updated_at = ?
        WHERE id = ?`
-    ).run(dayFolderId, new Date().toISOString(), id)
+    ).run(dayFolderId, now, id)
+    markDayFolderContentActivity(dayFolderId, now)
   }
 
   updateDayFolderMetadata(id: string, dayFolderId: string, uploadRelativePath: string): void {
+    const now = new Date().toISOString()
     getDb().prepare(
       `UPDATE tasks
        SET day_folder_id = ?, upload_relative_path = ?, updated_at = ?
        WHERE id = ?`
-    ).run(dayFolderId, uploadRelativePath, new Date().toISOString(), id)
+    ).run(dayFolderId, uploadRelativePath, now, id)
+    markDayFolderContentActivity(dayFolderId, now)
   }
 
   updateGroupVariables(id: string, variables: PathVariables): void {
@@ -533,6 +547,7 @@ export class TaskRepo {
         last_seen_at, source_status, stable_count, created_at, updated_at
       ) VALUES (?, ?, ?, ?, 'pending', ?, ?, 'present', 1, ?, ?)`
     ).run(id, taskId, relativePath, fileSize, mtimeMs, now, now, now)
+    this.markTaskContentActivity(taskId, now)
     return rowToTaskFile(db.prepare('SELECT * FROM task_files WHERE id = ?').get(id) as Record<string, unknown>)
   }
 
@@ -548,9 +563,10 @@ export class TaskRepo {
         last_seen_at, source_status, stable_count, created_at, updated_at
       ) VALUES (?, ?, ?, ?, 'pending', ?, ?, 'present', 1, ?, ?)`
     )
+    let insertedRows = 0
     const transaction = db.transaction(() => {
       for (const f of files) {
-        stmt.run(
+        insertedRows += stmt.run(
           uuid(),
           taskId,
           f.relativePath,
@@ -559,10 +575,11 @@ export class TaskRepo {
           now,
           now,
           now
-        )
+        ).changes
       }
     })
     transaction()
+    if (insertedRows > 0) this.markTaskContentActivity(taskId, now)
   }
 
   listFiles(taskId: string, status?: string): TaskFile[] {
@@ -645,7 +662,7 @@ export class TaskRepo {
     }
 
     try {
-      return this.completeReconcileFromTempTable(
+      const result = this.completeReconcileFromTempTable(
         task,
         quotedTempTable,
         now,
@@ -653,6 +670,8 @@ export class TaskRepo {
         changed,
         options.replacePlannedObjectKeys ?? hasPlannedObjectKeys
       )
+      if (result.changed) markDayFolderContentActivity(task.dayFolderId, now)
+      return result
     } finally {
       db.prepare(`DROP TABLE IF EXISTS ${quotedTempTable}`).run()
     }
@@ -688,7 +707,7 @@ export class TaskRepo {
         now,
         Math.max(1, requiredStableChecks)
       )
-      return this.completeReconcileFromTempTable(
+      const result = this.completeReconcileFromTempTable(
         task,
         quotedTempTable,
         now,
@@ -696,6 +715,8 @@ export class TaskRepo {
         changed,
         options.replacePlannedObjectKeys ?? hasPlannedObjectKeys
       )
+      if (result.changed) markDayFolderContentActivity(task.dayFolderId, now)
+      return result
     } finally {
       db.prepare(`DROP TABLE IF EXISTS ${quotedTempTable}`).run()
     }
@@ -1071,6 +1092,15 @@ export class TaskRepo {
     return `"${identifier}"`
   }
 
+  private markTaskContentActivity(taskId: string, occurredAt: string): void {
+    const row = getDb().prepare(
+      `SELECT day_folder_id
+       FROM tasks
+       WHERE id = ?`
+    ).get(taskId) as { day_folder_id: string | null } | undefined
+    markDayFolderContentActivity(row?.day_folder_id, occurredAt)
+  }
+
   markFileChanged(
     fileId: string,
     fileSize: number,
@@ -1078,6 +1108,12 @@ export class TaskRepo {
   ): void {
     const db = getDb()
     const now = new Date().toISOString()
+    const row = db.prepare(
+      `SELECT t.day_folder_id
+       FROM task_files tf
+       INNER JOIN tasks t ON t.id = tf.task_id
+       WHERE tf.id = ?`
+    ).get(fileId) as { day_folder_id: string | null } | undefined
     const transaction = db.transaction(() => {
       db.prepare(
         `UPDATE task_files
@@ -1095,6 +1131,7 @@ export class TaskRepo {
       ).run(now, fileId)
     })
     transaction()
+    markDayFolderContentActivity(row?.day_folder_id, now)
   }
 
   scheduleRetry(fileId: string, errorMessage: string, nextRetryAt: string): number {

@@ -6,6 +6,10 @@ import { BrowserWindow } from 'electron'
 import log from 'electron-log'
 import { IPC } from '@shared/ipc-channels'
 import {
+  buildLastUploadGroupIndexByStream,
+  uploadGroupSiblingStreamKey
+} from '@shared/upload-group'
+import {
   getUploadTargetSnapshot,
   providersForMode,
   type UploadTargetSnapshot
@@ -273,6 +277,7 @@ export class ScannerService {
         root.directory,
         profile.discovery
       )
+      const lastGroupIndexByStream = buildLastUploadGroupIndexByStream(groups)
       for (let index = 0; index < groups.length; index++) {
         const group = groups[index]
         const result = await this.scanUploadGroupDirectory(
@@ -292,7 +297,8 @@ export class ScannerService {
         skipped += result.skipped
 
         const shouldCloseByRollover =
-          profile.completion.mode === 'rollover' && index < groups.length - 1
+          profile.completion.mode === 'rollover' &&
+          lastGroupIndexByStream.get(uploadGroupSiblingStreamKey(group.relativePath)) !== index
         const shouldCloseByMarker =
           profile.completion.mode === 'marker-file' &&
           existsSync(join(group.folderPath, profile.completion.markerFile))

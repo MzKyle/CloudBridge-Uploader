@@ -186,14 +186,14 @@ test('upload group transitions and completion policies stay explicit', () => {
       completion: { mode: 'none' },
       taskStatuses: ['completed']
     }),
-    'sealed'
+    'open'
   )
   assert.equal(
     deriveUploadGroupStatus({
       currentStatus: 'open',
       completion: { mode: 'inactivity', idleMinutes: 5 },
       taskStatuses: ['completed'],
-      lastActivityAt: '2026-09-13T10:00:00.000Z',
+      lastContentActivityAt: '2026-09-13T10:00:00.000Z',
       now: new Date('2026-09-13T10:06:00.000Z')
     }),
     'sealed'
@@ -203,7 +203,7 @@ test('upload group transitions and completion policies stay explicit', () => {
       currentStatus: 'open',
       completion: { mode: 'inactivity', idleMinutes: 5 },
       taskStatuses: ['completed'],
-      lastActivityAt: '2026-09-13T10:04:00.000Z',
+      lastContentActivityAt: '2026-09-13T10:04:00.000Z',
       now: new Date('2026-09-13T10:06:00.000Z')
     }),
     'open'

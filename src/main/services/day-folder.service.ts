@@ -7,6 +7,18 @@ import { getTaskRepo } from '../db/task.repo'
 import { removeDayUpload, writeDayUpload } from '../utils/marker-file'
 
 export class DayFolderService {
+  requestCloseUploadGroup(dayFolderId: string): DayFolderSummary | null {
+    const repo = getDayFolderRepo()
+    const summary = repo.getById(dayFolderId)
+    if (!summary) return null
+    if (summary.uploadGroupStatus === 'open') {
+      repo.markClosing(dayFolderId)
+    } else if (summary.uploadGroupStatus !== 'closing') {
+      throw new Error('只有打开中的归档组可以手动封账')
+    }
+    return this.refresh(dayFolderId)
+  }
+
   refresh(dayFolderId: string, discoveredChildren?: string[]): DayFolderSummary | null {
     const repo = getDayFolderRepo()
     if (discoveredChildren) {

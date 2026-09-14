@@ -60,6 +60,7 @@ export function runMigrations(db: Database.Database): void {
       variables_json TEXT NOT NULL DEFAULT '{}',
       upload_group_status TEXT NOT NULL DEFAULT 'open',
       discovered_at TEXT,
+      last_content_activity_at TEXT,
       sealed_at TEXT,
       cleanable_at TEXT,
       cleaned_at TEXT
@@ -273,6 +274,7 @@ export function runMigrations(db: Database.Database): void {
     ['variables_json', `TEXT NOT NULL DEFAULT '{}'`],
     ['upload_group_status', `TEXT NOT NULL DEFAULT 'open'`],
     ['discovered_at', 'TEXT'],
+    ['last_content_activity_at', 'TEXT'],
     ['sealed_at', 'TEXT'],
     ['cleanable_at', 'TEXT'],
     ['cleaned_at', 'TEXT']
@@ -302,6 +304,12 @@ export function runMigrations(db: Database.Database): void {
           ELSE upload_group_status
         END,
         discovered_at = COALESCE(discovered_at, created_at),
+        last_content_activity_at = COALESCE(
+          last_content_activity_at,
+          discovered_at,
+          updated_at,
+          created_at
+        ),
         sealed_at = CASE
           WHEN sealed_at IS NULL AND status IN ('completed', 'completed_with_skips') THEN completed_at
           ELSE sealed_at

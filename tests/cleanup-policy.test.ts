@@ -7,16 +7,20 @@ import {
   mkdtempSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DEFAULT_SETTINGS } from '../src/shared/constants'
 import { runMigrations, setDbForTests } from '../src/main/db/database'
 import { DayFolderRepo } from '../src/main/db/day-folder.repo'
 import { SettingsRepo } from '../src/main/db/settings.repo'
 import { TaskRepo } from '../src/main/db/task.repo'
 import { getTaskDestinationRepo } from '../src/main/db/task-destination.repo'
 import { CleanupService } from '../src/main/services/cleanup.service'
+import { isSafeCleanupPath } from '../src/main/utils/cleanup-path-safety'
+import type { CleanupPolicy, UploadProfile } from '../src/shared/types'
 
 interface CleanupFixture {
   groupPath: string
@@ -39,7 +43,16 @@ function closeDatabase(db: Database.Database): void {
 }
 
 function createCleanupFixture(root: string): CleanupFixture {
-  const groupPath = join(root, 'batch-1')
+  return createCleanupFixtureForProfile(root, 'profile-1', 'batch-1')
+}
+
+function createCleanupFixtureForProfile(
+  root: string,
+  profileId: string,
+  groupName: string,
+  profileSnapshot?: UploadProfile
+): CleanupFixture {
+  const groupPath = join(root, groupName)
   const taskPath = join(groupPath, 'session-1')
   const filePath = join(taskPath, 'data.bin')
   mkdirSync(taskPath, { recursive: true })
@@ -48,9 +61,9 @@ function createCleanupFixture(root: string): CleanupFixture {
   const dayFolderRepo = new DayFolderRepo()
   const group = dayFolderRepo.ensure(
     groupPath,
-    'batch-1',
-    { batch: 'batch-1' },
-    'profile-1'
+    groupName,
+    { batch: groupName },
+    profileId
   )
   dayFolderRepo.updateDiscovery(group.id, ['session-1'])
 
@@ -59,12 +72,13 @@ function createCleanupFixture(root: string): CleanupFixture {
     folderPath: taskPath,
     folderName: 'session-1',
     dayFolderId: group.id,
-    uploadRelativePath: 'batch-1/session-1',
+    uploadRelativePath: `${groupName}/session-1`,
     uploadTargetMode: 'aliyun',
     sourceType: 'local',
-    profileId: 'profile-1',
-    profileName: 'Profile 1',
-    groupVariables: { batch: 'batch-1' }
+    profileId,
+    profileName: profileSnapshot?.name || profileId,
+    profileSnapshot,
+    groupVariables: { batch: groupName }
   })
   const stats = statSync(filePath)
   const file = taskRepo.createFile(task.id, 'data.bin', stats.size, stats.mtimeMs)
@@ -77,13 +91,85 @@ function createCleanupFixture(root: string): CleanupFixture {
   }
 }
 
+function createProfile(
+  id: string,
+  root: string,
+  cleanup: CleanupPolicy
+): UploadProfile {
+  const base = DEFAULT_SETTINGS.profiles[0] as UploadProfile
+  return {
+    ...base,
+    id,
+    name: id,
+    source: {
+      root,
+      roots: [root]
+    },
+    cleanup,
+    scan: {
+      ...base.scan,
+      providerDirectories: {
+        aliyun: [root],
+        tencent: []
+      }
+    }
+  }
+}
+
+function saveProfiles(
+  profiles: UploadProfile[],
+  cleanup: CleanupPolicy = {
+    enabled: false,
+    retentionDays: 7,
+    onlyAfterSealed: true
+  }
+): void {
+  new SettingsRepo().saveAll({
+    profiles,
+    activeProfileId: profiles[0]?.id || 'default',
+    cleanup
+  })
+}
+
 function setOldCompletedGroupTimestamps(db: Database.Database, groupId: string): void {
-  const old = '2026-01-01T00:00:00.000Z'
+  const old = '2000-01-01T00:00:00.000Z'
   db.prepare(`
     UPDATE day_folders
     SET status = 'completed', completed_at = ?, sealed_at = ?, updated_at = ?
     WHERE id = ?
   `).run(old, old, old, groupId)
+}
+
+function markFixtureSafeAndSealed(
+  db: Database.Database,
+  fixture: CleanupFixture,
+  sealedAt = '2000-01-01T00:00:00.000Z'
+): void {
+  const dayFolderRepo = new DayFolderRepo()
+  const taskRepo = new TaskRepo()
+  const destinationRepo = getTaskDestinationRepo()
+
+  dayFolderRepo.transitionStatus(fixture.groupId, 'sealed')
+  taskRepo.updateStatus(fixture.taskId, 'completed')
+  destinationRepo.updateStatus(fixture.taskId, 'aliyun', 'completed')
+  db.prepare(`
+    UPDATE task_files
+    SET status = 'completed', stable_count = 2
+    WHERE id = ?
+  `).run(fixture.fileId)
+  destinationRepo.ensureForTaskFiles(fixture.taskId)
+  for (const target of destinationRepo.listFileTargets(fixture.taskId)) {
+    destinationRepo.updateFileStatus(
+      target.id,
+      'completed',
+      `archive/${target.relativePath}`
+    )
+  }
+  db.prepare(`
+    UPDATE day_folders
+    SET status = 'completed', completed_at = ?, sealed_at = ?, updated_at = ?
+    WHERE id = ?
+  `).run(sealedAt, sealedAt, sealedAt, fixture.groupId)
 }
 
 test('cleanup safety requires sealed groups with completed tasks, destinations, and files', () => {
@@ -127,13 +213,21 @@ test('cleanup service deletes and marks only safe sealed upload groups', async (
     const taskRepo = new TaskRepo()
     const destinationRepo = getTaskDestinationRepo()
 
-    new SettingsRepo().saveAll({
-      cleanup: {
+    saveProfiles([
+      createProfile(
+        'profile-1',
+        root,
+        {
+          enabled: true,
+          retentionDays: 0,
+          onlyAfterSealed: true
+        }
+      )
+    ], {
         enabled: true,
         retentionDays: 0,
         onlyAfterSealed: true
-      }
-    })
+      })
 
     await new CleanupService().cleanup()
     assert.equal(existsSync(fixture.groupPath), true)
@@ -163,5 +257,131 @@ test('cleanup service deletes and marks only safe sealed upload groups', async (
   } finally {
     rmSync(root, { recursive: true, force: true })
     closeDatabase(db)
+  }
+})
+
+test('cleanup service resolves independent cleanup policies per profile', async () => {
+  const db = createDatabase()
+  const root = mkdtempSync(join(tmpdir(), 'cleanup-profile-enabled-'))
+  try {
+    const profileAFixture = createCleanupFixtureForProfile(root, 'profile-a', 'batch-a')
+    const profileBFixture = createCleanupFixtureForProfile(root, 'profile-b', 'batch-b')
+    saveProfiles([
+      createProfile('profile-a', root, {
+        enabled: true,
+        retentionDays: 0,
+        onlyAfterSealed: true
+      }),
+      createProfile('profile-b', root, {
+        enabled: false,
+        retentionDays: 0,
+        onlyAfterSealed: true
+      })
+    ])
+    markFixtureSafeAndSealed(db, profileAFixture)
+    markFixtureSafeAndSealed(db, profileBFixture)
+
+    await new CleanupService().cleanup()
+
+    assert.equal(existsSync(profileAFixture.groupPath), false)
+    assert.equal(existsSync(profileBFixture.groupPath), true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    closeDatabase(db)
+  }
+})
+
+test('cleanup service applies each profile retention independently', async () => {
+  const db = createDatabase()
+  const root = mkdtempSync(join(tmpdir(), 'cleanup-profile-retention-'))
+  try {
+    const profileAFixture = createCleanupFixtureForProfile(root, 'profile-a', 'batch-a')
+    const profileBFixture = createCleanupFixtureForProfile(root, 'profile-b', 'batch-b')
+    saveProfiles([
+      createProfile('profile-a', root, {
+        enabled: true,
+        retentionDays: 0,
+        onlyAfterSealed: true
+      }),
+      createProfile('profile-b', root, {
+        enabled: true,
+        retentionDays: 30,
+        onlyAfterSealed: true
+      })
+    ])
+    markFixtureSafeAndSealed(db, profileAFixture, '2000-01-01T00:00:00.000Z')
+    markFixtureSafeAndSealed(db, profileBFixture, new Date().toISOString())
+
+    await new CleanupService().cleanup()
+
+    assert.equal(existsSync(profileAFixture.groupPath), false)
+    assert.equal(existsSync(profileBFixture.groupPath), true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    closeDatabase(db)
+  }
+})
+
+test('cleanup service prefers task profile snapshot over current profile cleanup', async () => {
+  const db = createDatabase()
+  const root = mkdtempSync(join(tmpdir(), 'cleanup-profile-snapshot-'))
+  try {
+    const snapshotProfile = createProfile('profile-a', root, {
+      enabled: true,
+      retentionDays: 30,
+      onlyAfterSealed: true
+    })
+    const fixture = createCleanupFixtureForProfile(
+      root,
+      'profile-a',
+      'batch-a',
+      snapshotProfile
+    )
+    saveProfiles([
+      createProfile('profile-a', root, {
+        enabled: true,
+        retentionDays: 0,
+        onlyAfterSealed: true
+      })
+    ])
+    markFixtureSafeAndSealed(
+      db,
+      fixture,
+      new Date(Date.now() - 1000).toISOString()
+    )
+
+    await new CleanupService().cleanup()
+
+    assert.equal(existsSync(fixture.groupPath), true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    closeDatabase(db)
+  }
+})
+
+test('cleanup path safety guard rejects roots, traversal, and external symlinks', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cleanup-guard-root-'))
+  const outside = mkdtempSync(join(tmpdir(), 'cleanup-guard-outside-'))
+  const child = join(root, 'group-1')
+  const symlinkPath = join(root, 'external-link')
+  try {
+    mkdirSync(child)
+    symlinkSync(outside, symlinkPath, 'dir')
+
+    assert.equal(await isSafeCleanupPath({ targetPath: root, sourceRoots: [root] }), false)
+    assert.equal(await isSafeCleanupPath({ targetPath: '/', sourceRoots: [root] }), false)
+    assert.equal(await isSafeCleanupPath({ targetPath: 'C:\\', sourceRoots: [root] }), false)
+    assert.equal(
+      await isSafeCleanupPath({ targetPath: join(root, '..'), sourceRoots: [root] }),
+      false
+    )
+    assert.equal(
+      await isSafeCleanupPath({ targetPath: symlinkPath, sourceRoots: [root] }),
+      false
+    )
+    assert.equal(await isSafeCleanupPath({ targetPath: child, sourceRoots: [root] }), true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(outside, { recursive: true, force: true })
   }
 })

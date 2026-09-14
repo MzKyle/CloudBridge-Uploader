@@ -39,6 +39,7 @@ import {
   fetchDayFolders,
   ignoreDayFolder,
   restoreDayFolder,
+  closeUploadGroup,
   fetchSettings,
   fetchUploadQueueStatus,
   previewUploadPath,
@@ -64,7 +65,15 @@ type ConfirmAction =
   | { kind: "upload-window"; scope: "selected" | "all-pending" }
   | { kind: "stop-upload" }
   | { kind: "ignore-day"; id: string }
+  | { kind: "close-upload-group"; id: string }
   | { kind: "skip-task"; id: string };
+
+interface DashboardProfileOption {
+  id: string;
+  name: string;
+  enabled: boolean;
+  completionMode: string;
+}
 
 export default function Dashboard() {
   const tasks = useTaskStore((state) => state.tasks);
@@ -74,7 +83,7 @@ export default function Dashboard() {
   const [dayFolders, setDayFolders] = useState<DayFolderSummary[]>([]);
   const [provider, setProvider] = useState<CloudProvider>("aliyun");
   const [providerReady, setProviderReady] = useState(false);
-  const [profiles, setProfiles] = useState<Array<{ id: string; name: string; enabled: boolean }>>([]);
+  const [profiles, setProfiles] = useState<DashboardProfileOption[]>([]);
   const [pendingFolder, setPendingFolder] = useState<string | null>(null);
   const [selectedProfileId, setSelectedProfileId] = useState("");
   const [pathPreview, setPathPreview] = useState<UploadPathPreview | null>(null);
@@ -106,6 +115,7 @@ export default function Dashboard() {
           id: profile.id,
           name: profile.name,
           enabled: profile.enabled,
+          completionMode: profile.completion.mode,
         })));
         setSelectedProfileId(settings.activeProfileId);
       })
@@ -175,6 +185,7 @@ export default function Dashboard() {
         id: profile.id,
         name: profile.name,
         enabled: profile.enabled,
+        completionMode: profile.completion.mode,
       }));
       const enabledProfile =
         nextProfiles.find((profile) => profile.id === settings.activeProfileId && profile.enabled) ??
@@ -295,6 +306,21 @@ export default function Dashboard() {
       fetchDayFolders({ limit: 30, provider, includeCompleted: false }).then(setDayFolders),
     ]);
   }, [loadTasks, provider]);
+
+  const performCloseUploadGroup = useCallback(async (id: string) => {
+    const summary = await closeUploadGroup(id);
+    await refreshDashboard();
+    showToast(
+      summary?.uploadGroupStatus === "sealed"
+        ? "归档组已封账"
+        : "归档组已进入封账流程",
+      "success",
+    );
+  }, [refreshDashboard]);
+
+  const handleCloseUploadGroup = useCallback((id: string) => {
+    setConfirmAction({ kind: "close-upload-group", id });
+  }, []);
 
   const handleRetry = useCallback(async (
     taskId: string,
@@ -424,6 +450,10 @@ export default function Dashboard() {
     () => profiles.filter((profile) => profile.enabled),
     [profiles],
   );
+  const profileCompletionModeById = useMemo(
+    () => new Map(profiles.map((profile) => [profile.id, profile.completionMode])),
+    [profiles],
+  );
   const detailTask = useMemo(
     () => providerTasks.find((task) => task.id === detailTaskId) ?? null,
     [detailTaskId, providerTasks],
@@ -472,6 +502,8 @@ export default function Dashboard() {
         await performStopUpload();
       } else if (confirmAction.kind === "ignore-day") {
         await performIgnoreDay(confirmAction.id);
+      } else if (confirmAction.kind === "close-upload-group") {
+        await performCloseUploadGroup(confirmAction.id);
       } else if (confirmAction.kind === "skip-task") {
         await performCancel(confirmAction.id);
       }
@@ -482,6 +514,7 @@ export default function Dashboard() {
   }, [
     confirmAction,
     performCancel,
+    performCloseUploadGroup,
     performIgnoreDay,
     performStartUpload,
     performStopUpload,
@@ -517,6 +550,16 @@ export default function Dashboard() {
         confirmText: "确认忽略",
         cancelText: "取消",
         variant: "destructive" as const,
+      };
+    }
+    if (confirmAction.kind === "close-upload-group") {
+      return {
+        title: "封账归档组",
+        description:
+          "确认后，该归档组会停止继续收集新任务；已有任务全部完成后才会封账。",
+        confirmText: "封账",
+        cancelText: "取消",
+        variant: "warning" as const,
       };
     }
     return {
@@ -687,6 +730,11 @@ export default function Dashboard() {
                             provider={provider}
                             onIgnore={handleIgnoreDay}
                             onRestore={handleRestoreDay}
+                            onClose={handleCloseUploadGroup}
+                            canCloseManually={
+                              dayFolder.uploadGroupStatus === "open" &&
+                              profileCompletionModeById.get(dayFolder.profileId || "") === "manual"
+                            }
                           />
                         {childTasks.length === 0 && (
                           <div className="ml-5 border-l pl-4 text-xs text-muted-foreground py-2">
@@ -964,12 +1012,16 @@ const DayFolderCardWithSpeed = memo(function DayFolderCardWithSpeed({
   provider,
   onIgnore,
   onRestore,
+  onClose,
+  canCloseManually,
 }: {
   dayFolder: DayFolderSummary;
   tasks: Task[];
   provider: CloudProvider;
   onIgnore: (id: string) => void;
   onRestore: (id: string) => void;
+  onClose: (id: string) => void;
+  canCloseManually: boolean;
 }) {
   const speed = useTaskStore(
     useCallback(
@@ -990,6 +1042,8 @@ const DayFolderCardWithSpeed = memo(function DayFolderCardWithSpeed({
       speed={speed}
       onIgnore={onIgnore}
       onRestore={onRestore}
+      onClose={onClose}
+      canCloseManually={canCloseManually}
     />
   );
 });

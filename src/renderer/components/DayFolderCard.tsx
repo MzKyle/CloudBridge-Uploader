@@ -1,4 +1,4 @@
-import { Ban, CalendarDays, Undo2 } from "lucide-react";
+import { Archive, Ban, CalendarDays, Undo2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
@@ -24,12 +24,16 @@ export function DayFolderCard({
   speed = 0,
   onIgnore,
   onRestore,
+  onClose,
+  canCloseManually = false,
 }: {
   dayFolder: DayFolderSummary;
   tasks?: Task[];
   speed?: number;
   onIgnore?: (id: string) => void;
   onRestore?: (id: string) => void;
+  onClose?: (id: string) => void;
+  canCloseManually?: boolean;
 }) {
   const percent =
     dayFolder.totalChildren > 0
@@ -58,6 +62,16 @@ export function DayFolderCard({
               <span className="text-xs text-muted-foreground">
                 {new Date(dayFolder.completedAt).toLocaleString("zh-CN")}
               </span>
+            )}
+            {canCloseManually && onClose && !dayFolder.ignored && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onClose(dayFolder.id)}
+              >
+                <Archive className="h-3.5 w-3.5 mr-1" />
+                封账
+              </Button>
             )}
             {dayFolder.ignored ? (
               onRestore && (
