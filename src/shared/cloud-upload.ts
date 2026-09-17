@@ -4,7 +4,6 @@ import type {
   CloudConnectionType,
   CloudProvider,
   FileStatus,
-  LegacyCloudMode,
   TaskStatus
 } from './types'
 
@@ -18,15 +17,6 @@ export function legacyProviderForConnection(
   connection: Pick<CloudConnection, 'type'>
 ): CloudProvider {
   return legacyProviderForConnectionType(connection.type)
-}
-
-export function legacyModeForConnections(
-  connections: Array<Pick<CloudConnection, 'type'>>
-): LegacyCloudMode {
-  const providers = new Set(connections.map(legacyProviderForConnection))
-  if (providers.has('aliyun') && providers.has('tencent')) return 'both'
-  if (providers.has('tencent')) return 'tencent'
-  return 'aliyun'
 }
 
 export function connectionConfigPrefix(
@@ -48,8 +38,8 @@ export function findConnection(
   return connections.find((connection) => connection.id === normalizedId) || null
 }
 
-export function progressKey(taskId: string, provider: CloudProvider): string {
-  return `${taskId}:${provider}`
+export function progressKey(taskId: string, connectionId: string): string {
+  return `${taskId}:${connectionId}`
 }
 
 export function deriveLogicalFileStatus(statuses: FileStatus[]): FileStatus {

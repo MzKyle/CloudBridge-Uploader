@@ -77,14 +77,11 @@ export function registerAllIpc(): void {
     const task = taskRepo.create({
       folderPath: args.folderPath,
       folderName,
-      ossPrefix: snapshot.destinations.find((destination) =>
-        destination.legacyProvider === 'aliyun'
-      )?.prefix || '',
-      legacyCloudMode: snapshot.legacyCloudMode,
+      ossPrefix: snapshot.destinations[0]?.prefix || '',
       destinations: snapshot.destinations.map((destination) => ({
-        provider: destination.legacyProvider,
         connectionId: destination.connectionId,
         connectionName: destination.connectionName,
+        connectionType: destination.connectionType,
         prefix: destination.prefix,
         uploadRelativePath: folderName,
         pathMode: 'target-root',
@@ -140,8 +137,8 @@ export function registerAllIpc(): void {
     broadcastStatusChange(args.taskId, 'scanning')
   })
 
-  ipcMain.handle(IPC.TASK_RETRY, (_event, args: { taskId: string; provider?: CloudProvider }) => {
-    getTaskRepo().retry(args.taskId, args.provider)
+  ipcMain.handle(IPC.TASK_RETRY, (_event, args: { taskId: string; connectionId?: string }) => {
+    getTaskRepo().retry(args.taskId, args.connectionId)
     getDayFolderService().refreshForTask(args.taskId)
     broadcastStatusChange(args.taskId, 'pending')
   })

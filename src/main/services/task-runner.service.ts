@@ -20,7 +20,6 @@ import { FileFilterService } from './file-filter.service'
 import { SpeedCalculator } from '../utils/speed-calculator'
 import { getUploadSemaphore } from '../utils/upload-semaphore'
 import type {
-  CloudProvider,
   PathMappingConfig,
   Task,
   TaskProgress,
@@ -38,7 +37,9 @@ interface UploadPipelineResult {
   requiredStableChecks: number
 }
 
-interface ProviderRuntime {
+interface DestinationRuntime {
+  connectionId: string
+  connectionName: string | null
   uploader: CloudTaskUploader
   speed: SpeedCalculator
   uploadedFiles: number
@@ -107,8 +108,8 @@ export class TaskRunnerService {
     if (destinations.length === 0) {
       throw new Error('任务没有配置任何上传目标')
     }
-    const destinationByProvider = new Map(
-      destinations.map((destination) => [destination.provider, destination])
+    const destinationByConnectionId = new Map(
+      destinations.map((destination) => [destination.connectionId, destination])
     )
     const connectionStore = getCloudConnectionStore()
     const objectKeyBaseContext = this.buildObjectKeyBaseContext(task)
@@ -122,13 +123,13 @@ export class TaskRunnerService {
       return this.updateDestinationFinalStates(task)
     }
     this.assertNoDuplicateObjectKeys(
-      destinationByProvider,
+      destinationByConnectionId,
       jobs,
       objectKeyBaseContext
     )
-    const jobProviders = new Set(jobs.map((job) => job.provider))
+    const jobConnectionIds = new Set(jobs.map((job) => job.connectionId))
     for (const destination of destinations) {
-      if (!jobProviders.has(destination.provider)) continue
+      if (!jobConnectionIds.has(destination.connectionId)) continue
       const connection = connectionStore.resolve(destination.connectionId)
       const error = getCloudUploadService().validateConnection(connection)
       if (error) throw new Error(error)
@@ -141,39 +142,41 @@ export class TaskRunnerService {
       lastPersistAt: 0
     }
 
-    const providers = Array.from(jobProviders)
-    const runtimes = new Map<CloudProvider, ProviderRuntime>()
+    const connectionIds = Array.from(jobConnectionIds)
+    const runtimes = new Map<string, DestinationRuntime>()
     try {
-      for (const provider of providers) {
-        const destination = destinationByProvider.get(provider)
+      for (const connectionId of connectionIds) {
+        const destination = destinationByConnectionId.get(connectionId)
         if (!destination) continue
         const connection = connectionStore.resolve(destination.connectionId)
         const uploader = await getCloudUploadService().createTaskUploader(
           connection,
           settings.upload.multipartThreshold
         )
-        const providerSummary = destinationRepo.summarizeFileTargets(
+        const destinationSummary = destinationRepo.summarizeFileTargets(
           task.id,
-          provider
+          connectionId
         )
-        runtimes.set(provider, {
+        runtimes.set(connectionId, {
+          connectionId,
+          connectionName: destination.connectionName,
           uploader,
           speed: new SpeedCalculator(),
-          uploadedFiles: providerSummary.uploaded,
-          uploadedBytes: providerSummary.uploadedBytes,
-          totalFiles: providerSummary.total,
-          totalBytes: providerSummary.totalBytes,
-          queuedFiles: providerSummary.pending,
-          failedFiles: providerSummary.failed,
-          skippedFiles: providerSummary.skipped,
+          uploadedFiles: destinationSummary.uploaded,
+          uploadedBytes: destinationSummary.uploadedBytes,
+          totalFiles: destinationSummary.total,
+          totalBytes: destinationSummary.totalBytes,
+          queuedFiles: destinationSummary.pending,
+          failedFiles: destinationSummary.failed,
+          skippedFiles: destinationSummary.skipped,
           activeUploads: new Map(),
           activeBytes: 0,
           transferredBytes: 0,
           lastBroadcastAt: 0,
           lastProgressPersistAt: 0
         })
-        destinationRepo.updateStatus(task.id, provider, 'uploading')
-        this.broadcastDestinationStatus(task.id, provider, 'uploading')
+        destinationRepo.updateStatus(task.id, connectionId, 'uploading')
+        this.broadcastDestinationStatus(task.id, destination, 'uploading')
       }
     } catch (error) {
       for (const runtime of runtimes.values()) runtime.uploader.dispose()
@@ -207,7 +210,7 @@ export class TaskRunnerService {
           runtimes,
           semaphore,
           logicalProgress,
-          destinationByProvider,
+          destinationByConnectionId,
           objectKeyBaseContext,
           uploadRootPath,
           multipartThreshold,
@@ -223,8 +226,8 @@ export class TaskRunnerService {
     } finally {
       signal?.removeEventListener('abort', abortUploaders)
       this.persistLogicalProgress(task.id, logicalProgress, true)
-      for (const [provider, runtime] of runtimes) {
-        this.persistProviderProgress(task.id, provider, runtime, true)
+      for (const [connectionId, runtime] of runtimes) {
+        this.persistDestinationProgress(task.id, connectionId, runtime, true)
       }
       for (const runtime of runtimes.values()) runtime.uploader.dispose()
     }
@@ -281,13 +284,13 @@ export class TaskRunnerService {
   }
 
   private assertNoDuplicateObjectKeys(
-    destinationByProvider: Map<CloudProvider, Task['destinations'][number]>,
+    destinationByConnectionId: Map<string, Task['destinations'][number]>,
     jobs: FileDestinationUploadTarget[],
     objectKeyBaseContext: ObjectKeyBaseContext
   ): void {
-    const keysByProvider = new Map<CloudProvider, Map<string, string>>()
+    const keysByConnection = new Map<string, Map<string, string>>()
     for (const target of jobs) {
-      const destination = destinationByProvider.get(target.provider)
+      const destination = destinationByConnectionId.get(target.connectionId)
       if (!destination) continue
       const objectKey = this.renderTaskObjectKey(
         destination,
@@ -295,15 +298,15 @@ export class TaskRunnerService {
         target.plannedObjectKey,
         objectKeyBaseContext
       )
-      const providerKeys = keysByProvider.get(target.provider) || new Map()
-      const existing = providerKeys.get(objectKey)
+      const connectionKeys = keysByConnection.get(target.connectionId) || new Map()
+      const existing = connectionKeys.get(objectKey)
       if (existing && existing !== target.relativePath) {
         throw new Error(
-          `${target.provider} 对象 Key 重复: ${objectKey} (${existing}, ${target.relativePath})`
+          `${target.connectionId} 对象 Key 重复: ${objectKey} (${existing}, ${target.relativePath})`
         )
       }
-      providerKeys.set(objectKey, target.relativePath)
-      keysByProvider.set(target.provider, providerKeys)
+      connectionKeys.set(objectKey, target.relativePath)
+      keysByConnection.set(target.connectionId, connectionKeys)
     }
   }
 
@@ -365,10 +368,10 @@ export class TaskRunnerService {
   private async uploadTarget(
     task: Task,
     target: FileDestinationUploadTarget,
-    runtimes: Map<CloudProvider, ProviderRuntime>,
+    runtimes: Map<string, DestinationRuntime>,
     semaphore: ReturnType<typeof getUploadSemaphore>,
     logicalProgress: LogicalProgress,
-    destinationByProvider: Map<CloudProvider, Task['destinations'][number]>,
+    destinationByConnectionId: Map<string, Task['destinations'][number]>,
     objectKeyBaseContext: ObjectKeyBaseContext,
     uploadRootPath: string,
     multipartThreshold: number,
@@ -376,8 +379,8 @@ export class TaskRunnerService {
   ): Promise<void> {
     const taskRepo = getTaskRepo()
     const destinationRepo = getTaskDestinationRepo()
-    const runtime = runtimes.get(target.provider)
-    const destination = destinationByProvider.get(target.provider)
+    const runtime = runtimes.get(target.connectionId)
+    const destination = destinationByConnectionId.get(target.connectionId)
     if (!runtime || !destination) return
 
     const localPath = join(uploadRootPath, target.relativePath)
@@ -392,8 +395,8 @@ export class TaskRunnerService {
       destinationRepo.recalculateLogicalFile(target.taskFileId)
       runtime.skippedFiles++
       runtime.queuedFiles = Math.max(0, runtime.queuedFiles - 1)
-      this.persistProviderProgress(task.id, target.provider, runtime)
-      this.broadcastProgress(task.id, target.provider, runtime, null, true)
+      this.persistDestinationProgress(task.id, target.connectionId, runtime)
+      this.broadcastProgress(task.id, runtime, null, true)
       return
     }
 
@@ -426,7 +429,6 @@ export class TaskRunnerService {
       runtime.queuedFiles = Math.max(0, runtime.queuedFiles - 1)
       this.broadcastProgress(
         task.id,
-        target.provider,
         runtime,
         target.relativePath,
         true
@@ -457,7 +459,6 @@ export class TaskRunnerService {
           runtime.speed.addSample(runtime.transferredBytes)
           this.broadcastProgress(
             task.id,
-            target.provider,
             runtime,
             target.relativePath
           )
@@ -525,7 +526,7 @@ export class TaskRunnerService {
           `第 ${retryCount} 次重试等待中: ${message}`
         )
         log.warn(
-          `任务 ${task.id} [${target.provider}] 将在 ${delay}ms 后重试: ${target.relativePath}`
+          `任务 ${task.id} [${target.connectionId}] 将在 ${delay}ms 后重试: ${target.relativePath}`
         )
       } else {
         destinationRepo.updateFileStatus(
@@ -538,7 +539,7 @@ export class TaskRunnerService {
         destinationRepo.recalculateLogicalFile(target.taskFileId)
         runtime.failedFiles++
         log.error(
-          `上传失败 [${target.provider}] ${target.relativePath}:`,
+          `上传失败 [${target.connectionId}] ${target.relativePath}:`,
           message
         )
       }
@@ -549,8 +550,8 @@ export class TaskRunnerService {
       )
       runtime.activeUploads.delete(target.id)
       if (acquired) semaphore.release(uploadWeight)
-      this.persistProviderProgress(task.id, target.provider, runtime)
-      this.broadcastProgress(task.id, target.provider, runtime, null, true)
+      this.persistDestinationProgress(task.id, target.connectionId, runtime)
+      this.broadcastProgress(task.id, runtime, null, true)
     }
   }
 
@@ -563,10 +564,10 @@ export class TaskRunnerService {
     return Math.max(1, Math.min(4, Math.floor(maxConcurrentUploads || 1)))
   }
 
-  private persistProviderProgress(
+  private persistDestinationProgress(
     taskId: string,
-    provider: CloudProvider,
-    runtime: ProviderRuntime,
+    connectionId: string,
+    runtime: DestinationRuntime,
     force = false
   ): void {
     const now = Date.now()
@@ -578,7 +579,7 @@ export class TaskRunnerService {
     }
     getTaskDestinationRepo().updateProgress(
       taskId,
-      provider,
+      connectionId,
       runtime.uploadedFiles,
       runtime.uploadedBytes
     )
@@ -611,12 +612,12 @@ export class TaskRunnerService {
       task.sourceType === 'local' && task.dayFolderId ? 'synced' : 'completed'
 
     for (const destination of repo.listByTask(task.id)) {
-      const summary = repo.summarizeFileTargets(task.id, destination.provider)
+      const summary = repo.summarizeFileTargets(task.id, destination.connectionId)
 
       if (summary.failed > 0) {
         const examples = repo.listFailedFileTargetExamples(
           task.id,
-          destination.provider
+          destination.connectionId
         )
         const message = `${summary.failed} 个文件上传失败，例如 ${examples
           .map(
@@ -624,10 +625,10 @@ export class TaskRunnerService {
               `${example.relativePath}: ${example.errorMessage || 'unknown error'}`
           )
           .join(' | ')}`
-        repo.updateStatus(task.id, destination.provider, 'failed', message)
+        repo.updateStatus(task.id, destination.connectionId, 'failed', message)
         this.broadcastDestinationStatus(
           task.id,
-          destination.provider,
+          destination,
           'failed',
           message
         )
@@ -635,13 +636,13 @@ export class TaskRunnerService {
       } else if (summary.pending > 0) {
         repo.updateStatus(
           task.id,
-          destination.provider,
+          destination.connectionId,
           'retrying',
           `${summary.pending} 个文件等待自动重试或稳定`
         )
         this.broadcastDestinationStatus(
           task.id,
-          destination.provider,
+          destination,
           'retrying',
           `${summary.pending} 个文件等待自动重试或稳定`
         )
@@ -653,26 +654,26 @@ export class TaskRunnerService {
             : 'completed'
         repo.updateStatus(
           task.id,
-          destination.provider,
+          destination.connectionId,
           status,
           summary.skipped > 0 ? `${summary.skipped} 个源文件已跳过` : undefined
         )
         this.broadcastDestinationStatus(
           task.id,
-          destination.provider,
+          destination,
           status,
           summary.skipped > 0 ? `${summary.skipped} 个源文件已跳过` : undefined
         )
       }
       repo.setTotals(
         task.id,
-        destination.provider,
+        destination.connectionId,
         summary.total,
         summary.totalBytes
       )
       repo.updateProgress(
         task.id,
-        destination.provider,
+        destination.connectionId,
         summary.uploaded,
         summary.uploadedBytes
       )
@@ -683,8 +684,7 @@ export class TaskRunnerService {
 
   private broadcastProgress(
     taskId: string,
-    provider: CloudProvider,
-    runtime: ProviderRuntime,
+    runtime: DestinationRuntime,
     currentFile: string | null,
     force = false
   ): void {
@@ -693,7 +693,8 @@ export class TaskRunnerService {
     runtime.lastBroadcastAt = now
     const progress: TaskProgress = {
       taskId,
-      provider,
+      connectionId: runtime.connectionId,
+      connectionName: runtime.connectionName,
       uploadedFiles: runtime.uploadedFiles,
       totalFiles: runtime.totalFiles,
       uploadedBytes: Math.min(
@@ -716,14 +717,15 @@ export class TaskRunnerService {
 
   private broadcastDestinationStatus(
     taskId: string,
-    provider: CloudProvider,
+    destination: Task['destinations'][number],
     status: TaskStatus,
     errorMessage?: string
   ): void {
     for (const win of BrowserWindow?.getAllWindows?.() ?? []) {
       win.webContents.send(IPC.TASK_DESTINATION_CHANGE, {
         taskId,
-        provider,
+        connectionId: destination.connectionId,
+        connectionName: destination.connectionName,
         status,
         errorMessage
       })

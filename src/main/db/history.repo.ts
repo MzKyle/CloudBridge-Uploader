@@ -5,6 +5,8 @@ function rowToHistory(row: Record<string, unknown>): HistoryItem {
   return {
     id: row.id as string,
     provider: row.provider as CloudProvider,
+    connectionId: row.connection_id as string,
+    connectionName: (row.connection_name as string) || null,
     folderName: row.folder_name as string,
     fileCount: row.total_files as number,
     totalBytes: row.total_bytes as number,
@@ -43,7 +45,8 @@ export class HistoryRepo {
 
     const rows = db
       .prepare(
-        `SELECT t.id, td.provider, t.folder_name, td.total_files, td.total_bytes,
+        `SELECT t.id, td.provider, td.connection_id, td.connection_name,
+          t.folder_name, td.total_files, td.total_bytes,
           td.status, td.completed_at,
           CAST((julianday(td.completed_at) - julianday(td.created_at)) * 86400 AS INTEGER)
             as duration_seconds

@@ -72,13 +72,6 @@ export class SettingsRepo {
       const filter = parsed as Record<string, unknown>
       filter.suffixes = normalizeSuffixes(filter.suffixes as string[])
     }
-    if (
-      (key === 'oss' || key === 'tencentS3') &&
-      typeof parsed === 'object' &&
-      parsed !== null
-    ) {
-      return getCredentialStore().decryptConfig(parsed as Record<string, unknown>)
-    }
     if (key === 'connections') {
       return normalizeCloudConnections(parsed).map((connection) => ({
         ...connection,
@@ -182,7 +175,20 @@ export class SettingsRepo {
       log: settings.log,
       cleanup: settings.cleanup
     }
-    this.saveAll(sections)
+    const db = this.db()
+    const transaction = db.transaction(() => {
+      for (const [key, value] of Object.entries(sections)) {
+        if (value !== undefined) this.set(key, value)
+      }
+      db.prepare(
+        `DELETE FROM settings
+         WHERE key IN ('profiles', 'activeProfileId', 'cloud', 'oss', 'tencentS3')`
+      ).run()
+      for (const key of ['profiles', 'activeProfileId', 'cloud', 'oss', 'tencentS3']) {
+        SettingsRepo.valueCache.delete(key)
+      }
+    })
+    transaction()
   }
 
   private assertConnectionDeletesAllowed(nextConnections: CloudConnection[]): void {

@@ -34,18 +34,18 @@ function cloudDestinations(
   const destinations: TaskDestinationCreateInput[] = []
   if (prefixes.aliyun !== undefined) {
     destinations.push({
-      provider: 'aliyun',
       connectionId: 'aliyun-prod',
       connectionName: '阿里云 OSS',
+      connectionType: 'aliyun-oss',
       prefix: prefixes.aliyun,
       uploadRelativePath
     })
   }
   if (prefixes.tencent !== undefined) {
     destinations.push({
-      provider: 'tencent',
       connectionId: 's3-compatible',
       connectionName: 'S3 兼容存储',
+      connectionType: 's3',
       prefix: prefixes.tencent,
       uploadRelativePath
     })
@@ -111,7 +111,6 @@ test('scanner task registration snapshots connection destinations', () => {
         dayFolderId: string,
         uploadRelativePath: string,
         targetSnapshot: {
-          legacyCloudMode: 'both'
           ruleId: string
           ruleName: string
           ruleSnapshot: Task['ruleSnapshot']
@@ -119,7 +118,6 @@ test('scanner task registration snapshots connection destinations', () => {
             connectionId: string
             connectionName: string
             connectionType: 'aliyun-oss' | 's3'
-            legacyProvider: 'aliyun' | 'tencent'
             prefix: string
           }>
         }
@@ -132,7 +130,6 @@ test('scanner task registration snapshots connection destinations', () => {
       dayFolder.id,
       '2026-06-27/both',
       {
-        legacyCloudMode: 'both',
         ruleId: 'rule-1',
         ruleName: 'Rule 1',
         ruleSnapshot: null,
@@ -141,14 +138,12 @@ test('scanner task registration snapshots connection destinations', () => {
             connectionId: 'aliyun-prod',
             connectionName: 'Aliyun',
             connectionType: 'aliyun-oss',
-            legacyProvider: 'aliyun',
             prefix: 'ali/'
           },
           {
             connectionId: 's3-compatible',
             connectionName: 'S3',
             connectionType: 's3',
-            legacyProvider: 'tencent',
             prefix: 'ten/'
           }
         ]
@@ -156,12 +151,12 @@ test('scanner task registration snapshots connection destinations', () => {
     )
 
     assert.deepEqual(
-      getTaskDestinationRepo().listByTask(bothTask.id).map((item) => item.provider),
+      getTaskDestinationRepo().listByTask(bothTask.id).map((item) => item.legacyProvider),
       ['aliyun', 'tencent']
     )
     assert.deepEqual(
       getTaskDestinationRepo().listByTask(bothTask.id).map((item) => ({
-        provider: item.provider,
+        provider: item.legacyProvider,
         connectionId: item.connectionId,
         uploadRelativePath: item.uploadRelativePath
       })),
@@ -182,20 +177,19 @@ test('history delete and clear are scoped to the selected provider', () => {
       folderPath: '/data/both',
       folderName: 'both',
       ossPrefix: 'ali/',
-      legacyCloudMode: 'both',
       destinations: cloudDestinations('both', { aliyun: 'ali/', tencent: 'ten/' }),
       uploadRelativePath: 'both',
       sourceType: 'manual'
     })
-    getTaskDestinationRepo().updateStatus(task.id, 'aliyun', 'completed')
-    getTaskDestinationRepo().updateStatus(task.id, 'tencent', 'completed')
+    getTaskDestinationRepo().updateStatus(task.id, 'aliyun-prod', 'completed')
+    getTaskDestinationRepo().updateStatus(task.id, 's3-compatible', 'completed')
 
     assert.equal(getHistoryRepo().list({ page: 1, pageSize: 20, provider: 'aliyun' }).total, 1)
     assert.equal(getHistoryRepo().list({ page: 1, pageSize: 20, provider: 'tencent' }).total, 1)
 
     getHistoryRepo().deleteById(task.id, 'aliyun')
     assert.deepEqual(
-      getTaskDestinationRepo().listByTask(task.id).map((item) => item.provider),
+      getTaskDestinationRepo().listByTask(task.id).map((item) => item.legacyProvider),
       ['tencent']
     )
     assert.equal(getTaskRepo().getById(task.id)?.id, task.id)
@@ -207,7 +201,6 @@ test('history delete and clear are scoped to the selected provider', () => {
       folderPath: '/data/aliyun-only',
       folderName: 'aliyun-only',
       ossPrefix: 'ali/',
-      legacyCloudMode: 'aliyun',
       destinations: cloudDestinations('aliyun-only', { aliyun: 'ali/' }),
       uploadRelativePath: 'aliyun-only',
       sourceType: 'manual'
@@ -216,13 +209,12 @@ test('history delete and clear are scoped to the selected provider', () => {
       folderPath: '/data/tencent-only',
       folderName: 'tencent-only',
       ossPrefix: '',
-      legacyCloudMode: 'tencent',
       destinations: cloudDestinations('tencent-only', { tencent: 'ten/' }),
       uploadRelativePath: 'tencent-only',
       sourceType: 'manual'
     })
-    getTaskDestinationRepo().updateStatus(aliyunOnly.id, 'aliyun', 'completed')
-    getTaskDestinationRepo().updateStatus(tencentOnly.id, 'tencent', 'completed')
+    getTaskDestinationRepo().updateStatus(aliyunOnly.id, 'aliyun-prod', 'completed')
+    getTaskDestinationRepo().updateStatus(tencentOnly.id, 's3-compatible', 'completed')
 
     getHistoryRepo().clear(undefined, 'aliyun')
     assert.equal(getTaskRepo().getById(aliyunOnly.id), null)
@@ -240,14 +232,13 @@ test('day folder summaries can be filtered and deleted by provider', () => {
       folderPath: '/data/2026-06-27/both',
       folderName: 'both',
       ossPrefix: 'ali/',
-      legacyCloudMode: 'both',
       destinations: cloudDestinations('2026-06-27/both', { aliyun: 'ali/', tencent: 'ten/' }),
       dayFolderId: dayFolder.id,
       uploadRelativePath: '2026-06-27/both',
       sourceType: 'local'
     })
-    getTaskDestinationRepo().updateStatus(task.id, 'aliyun', 'synced')
-    getTaskDestinationRepo().updateStatus(task.id, 'tencent', 'synced')
+    getTaskDestinationRepo().updateStatus(task.id, 'aliyun-prod', 'synced')
+    getTaskDestinationRepo().updateStatus(task.id, 's3-compatible', 'synced')
     db.prepare(
       "UPDATE day_folders SET status = 'completed', completed_at = ? WHERE id = ?"
     ).run(new Date().toISOString(), dayFolder.id)

@@ -202,7 +202,7 @@ export class CleanupService {
     for (const destination of task.destinations) {
       const destinationSummary = destinationRepo.summarizeFileTargets(
         task.id,
-        destination.provider
+        destination.connectionId
       )
       if (destinationSummary.failed > 0 || destinationSummary.pending > 0) {
         return false

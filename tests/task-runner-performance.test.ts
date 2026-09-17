@@ -11,7 +11,7 @@ import {
 } from '../src/main/db/task-destination.repo'
 import { TaskRepo } from '../src/main/db/task.repo'
 import { TaskRunnerService } from '../src/main/services/task-runner.service'
-import type { CloudProvider, PathMappingConfig, Task } from '../src/shared/types'
+import type { PathMappingConfig, Task } from '../src/shared/types'
 
 function createDatabase(): Database.Database {
   const db = new Database(':memory:')
@@ -233,19 +233,18 @@ test('scanner-style reconcile does not rewrite planned object keys', () => {
     const task = taskRepo.create({
       folderPath: '/tmp/source',
       folderName: 'source',
-      legacyCloudMode: 'both',
       destinations: [
         {
-          provider: 'aliyun',
           connectionId: 'aliyun-prod',
           connectionName: '阿里云 OSS',
+          connectionType: 'aliyun-oss',
           prefix: '',
           uploadRelativePath: 'source'
         },
         {
-          provider: 'tencent',
           connectionId: 's3-compatible',
           connectionName: 'S3 兼容存储',
+          connectionType: 's3',
           prefix: '',
           uploadRelativePath: 'source'
         }
@@ -308,7 +307,7 @@ test('object key validation reuses task-level path context', () => {
     findRuleBasePath: (task: Task) => string | undefined
     buildObjectKeyBaseContext: (task: Task) => ObjectKeyBaseContext
     assertNoDuplicateObjectKeys: (
-      destinationByProvider: Map<CloudProvider, Task['destinations'][number]>,
+      destinationByConnectionId: Map<string, Task['destinations'][number]>,
       jobs: FileDestinationUploadTarget[],
       objectKeyBaseContext: ObjectKeyBaseContext
     ) => void
@@ -330,7 +329,6 @@ test('object key validation reuses task-level path context', () => {
     totalBytes: 0,
     uploadedBytes: 0,
     ossPrefix: '',
-    legacyCloudMode: 'aliyun',
     destinations: [],
     dayFolderId: 'day-1',
     uploadRelativePath: '2026-06-30/work-1',
@@ -378,9 +376,9 @@ test('object key validation reuses task-level path context', () => {
   const destination = {
     id: 'destination-1',
     taskId: task.id,
-    provider: 'aliyun',
     connectionId: 'aliyun-prod',
     connectionName: '阿里云 OSS',
+    legacyProvider: 'aliyun',
     status: 'pending',
     prefix: 'upload',
     uploadRelativePath: '',
@@ -399,7 +397,8 @@ test('object key validation reuses task-level path context', () => {
     id: `target-${index}`,
     taskFileId: `file-${index}`,
     taskDestinationId: destination.id,
-    provider: 'aliyun',
+    connectionId: 'aliyun-prod',
+    legacyProvider: 'aliyun',
     status: 'pending',
     objectKey: null,
     plannedObjectKey: null,
@@ -419,7 +418,7 @@ test('object key validation reuses task-level path context', () => {
 
   const baseContext = service.buildObjectKeyBaseContext(task)
   service.assertNoDuplicateObjectKeys(
-    new Map([['aliyun', destination]]),
+    new Map([['aliyun-prod', destination]]),
     jobs,
     baseContext
   )

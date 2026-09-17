@@ -2,7 +2,6 @@ import { getDb } from './database'
 import { v4 as uuid } from 'uuid'
 import { normalize } from 'path'
 import type {
-  CloudProvider,
   TaskListQuery,
   Task,
   TaskDestination,
@@ -11,12 +10,10 @@ import type {
   TaskStatus,
   SourceType,
   UploadRule,
-  LegacyCloudMode,
   PathVariables
 } from '@shared/types'
 import {
   getTaskDestinationRepo,
-  legacyModeFromProviders,
   type TaskDestinationCreateInput
 } from './task-destination.repo'
 
@@ -42,7 +39,6 @@ function rowToTask(
     totalBytes: row.total_bytes as number,
     uploadedBytes: row.uploaded_bytes as number,
     ossPrefix: (row.oss_prefix as string) || '',
-    legacyCloudMode: (row.upload_target_mode as LegacyCloudMode) || 'aliyun',
     destinations:
       destinations ?? getTaskDestinationRepo().listByTask(row.id as string),
     dayFolderId: (row.day_folder_id as string) || null,
@@ -105,9 +101,9 @@ function defaultDestinationsForTask(
 ): TaskDestinationCreateInput[] {
   return [
     {
-      provider: 'aliyun',
       connectionId: 'aliyun-prod',
       connectionName: '阿里云 OSS',
+      connectionType: 'aliyun-oss',
       prefix: '',
       uploadRelativePath,
       pathMode: 'target-root',
@@ -299,7 +295,6 @@ export class TaskRepo {
     folderPath: string
     folderName: string
     ossPrefix?: string
-    legacyCloudMode?: LegacyCloudMode
     destinations?: TaskDestinationCreateInput[]
     dayFolderId?: string
     uploadRelativePath?: string
@@ -318,8 +313,6 @@ export class TaskRepo {
     const destinations = params.destinations?.length
       ? params.destinations
       : defaultDestinationsForTask(uploadRelativePath)
-    const legacyCloudMode = params.legacyCloudMode ||
-      legacyModeFromProviders(destinations.map((destination) => destination.provider))
     const normalizedDestinations = destinations.map((destination) => ({
       ...destination,
       uploadRelativePath: destination.uploadRelativePath ?? uploadRelativePath
@@ -336,7 +329,7 @@ export class TaskRepo {
       normalizedPath,
       params.folderName,
       params.ossPrefix || '',
-      legacyCloudMode,
+      'aliyun',
       params.dayFolderId || null,
       uploadRelativePath,
       params.sourceType || 'local',
@@ -414,8 +407,8 @@ export class TaskRepo {
     ).run(status, errorMessage || null, now, completedAt, id)
   }
 
-  retry(id: string, provider?: CloudProvider): void {
-    getTaskDestinationRepo().resetFailed(id, provider)
+  retry(id: string, connectionId?: string): void {
+    getTaskDestinationRepo().resetFailed(id, connectionId)
     getDb().prepare(
       `UPDATE task_files
        SET retry_count = 0, next_retry_at = NULL, error_message = NULL,
@@ -958,29 +951,29 @@ export class TaskRepo {
       taskId
     )
     for (const destination of destinationRepo.listByTask(taskId)) {
-      destinationRepo.recalculateProgress(taskId, destination.provider)
+      destinationRepo.recalculateProgress(taskId, destination.connectionId)
       const summary = destinationRepo.summarizeFileTargets(
         taskId,
-        destination.provider,
+        destination.connectionId,
         now
       )
       if (summary.failed > 0) {
         destinationRepo.updateStatus(
           taskId,
-          destination.provider,
+          destination.connectionId,
           'failed',
           '存在需要处理的上传失败文件'
         )
       } else if (summary.pending > 0) {
         destinationRepo.updateStatus(
           taskId,
-          destination.provider,
+          destination.connectionId,
           summary.retryWaiting > 0 ? 'retrying' : 'pending'
         )
       } else if (summary.total > 0) {
         destinationRepo.updateStatus(
           taskId,
-          destination.provider,
+          destination.connectionId,
           task.sourceType === 'local' && task.dayFolderId
             ? 'synced'
             : 'completed'

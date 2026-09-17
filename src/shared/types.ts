@@ -23,7 +23,6 @@ export type DayFolderStatus =
   | 'completed'
   | 'completed_with_skips'
 export type CloudProvider = 'aliyun' | 'tencent'
-export type LegacyCloudMode = 'aliyun' | 'tencent' | 'both'
 export type UploadPathMode =
   | 'target-root'
   | 'date-workdir'
@@ -190,7 +189,6 @@ export interface Task {
   totalBytes: number
   uploadedBytes: number
   ossPrefix: string
-  legacyCloudMode: LegacyCloudMode
   destinations: TaskDestination[]
   dayFolderId: string | null
   uploadRelativePath: string
@@ -237,9 +235,9 @@ export interface TaskDetail {
 export interface TaskDestination {
   id: string
   taskId: string
-  provider: CloudProvider
   connectionId: string
   connectionName: string | null
+  legacyProvider?: CloudProvider
   status: TaskStatus
   prefix: string
   uploadRelativePath: string
@@ -259,8 +257,8 @@ export interface TaskFileDestination {
   id: string
   taskFileId: string
   taskDestinationId: string
-  provider: CloudProvider
   connectionId: string
+  legacyProvider?: CloudProvider
   status: FileStatus
   objectKey: string | null
   plannedObjectKey: string | null
@@ -272,7 +270,8 @@ export interface TaskFileDestination {
 
 export interface TaskProgress {
   taskId: string
-  provider: CloudProvider
+  connectionId: string
+  connectionName?: string | null
   uploadedFiles: number
   totalFiles: number
   uploadedBytes: number
@@ -294,7 +293,8 @@ export interface TaskStatusEvent {
 
 export interface TaskDestinationStatusEvent {
   taskId: string
-  provider: CloudProvider
+  connectionId: string
+  connectionName?: string | null
   status: TaskStatus
   errorMessage?: string
 }
@@ -463,6 +463,8 @@ export interface ScannerStatus {
 export interface HistoryItem {
   id: string
   provider: CloudProvider
+  connectionId: string
+  connectionName: string | null
   folderName: string
   fileCount: number
   totalBytes: number

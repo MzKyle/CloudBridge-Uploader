@@ -73,12 +73,11 @@ function createCleanupFixtureForProfile(
     folderName: 'session-1',
     dayFolderId: group.id,
     uploadRelativePath: `${groupName}/session-1`,
-    legacyCloudMode: 'aliyun',
     destinations: [
       {
-        provider: 'aliyun',
         connectionId: 'aliyun-prod',
         connectionName: '阿里云 OSS',
+        connectionType: 'aliyun-oss',
         uploadRelativePath: `${groupName}/session-1`
       }
     ],
@@ -151,7 +150,7 @@ function markFixtureSafeAndSealed(
 
   dayFolderRepo.transitionStatus(fixture.groupId, 'sealed')
   taskRepo.updateStatus(fixture.taskId, 'completed')
-  destinationRepo.updateStatus(fixture.taskId, 'aliyun', 'completed')
+  destinationRepo.updateStatus(fixture.taskId, 'aliyun-prod', 'completed')
   db.prepare(`
     UPDATE task_files
     SET status = 'completed', stable_count = 2
@@ -189,7 +188,7 @@ test('cleanup safety requires sealed groups with completed tasks, destinations, 
     taskRepo.updateStatus(fixture.taskId, 'completed')
     assert.equal(dayFolderRepo.isSafeToClean(fixture.groupId), false)
 
-    destinationRepo.updateStatus(fixture.taskId, 'aliyun', 'completed')
+    destinationRepo.updateStatus(fixture.taskId, 'aliyun-prod', 'completed')
     assert.equal(dayFolderRepo.isSafeToClean(fixture.groupId), false)
 
     db.prepare(`
@@ -234,7 +233,7 @@ test('cleanup service deletes and marks only safe sealed upload groups', async (
 
     dayFolderRepo.transitionStatus(fixture.groupId, 'sealed')
     taskRepo.updateStatus(fixture.taskId, 'completed')
-    destinationRepo.updateStatus(fixture.taskId, 'aliyun', 'completed')
+    destinationRepo.updateStatus(fixture.taskId, 'aliyun-prod', 'completed')
     db.prepare(`
       UPDATE task_files
       SET status = 'completed', stable_count = 2

@@ -45,7 +45,7 @@ export const useTaskStore = create<TaskStore>((set) => ({
 
   setProgress: (p: TaskProgress) => {
     set((state) => {
-      const key = progressKey(p.taskId, p.provider)
+      const key = progressKey(p.taskId, p.connectionId)
       const current = state.progress[key]
       if (current && isSameProgress(current, p)) return state
       return { progress: { ...state.progress, [key]: p } }
@@ -58,7 +58,7 @@ export const useTaskStore = create<TaskStore>((set) => ({
       let progress = state.progress
       let changed = false
       for (const item of items) {
-        const key = progressKey(item.taskId, item.provider)
+        const key = progressKey(item.taskId, item.connectionId)
         const current = progress[key]
         if (current && isSameProgress(current, item)) continue
         if (!changed) {
@@ -84,7 +84,7 @@ export const useTaskStore = create<TaskStore>((set) => ({
           ? {
               ...task,
               destinations: task.destinations.map((destination) =>
-                destination.provider === event.provider
+                destination.connectionId === event.connectionId
                   ? {
                       ...destination,
                       status: event.status,
@@ -102,7 +102,8 @@ export const useTaskStore = create<TaskStore>((set) => ({
 function isSameProgress(a: TaskProgress, b: TaskProgress): boolean {
   return (
     a.taskId === b.taskId &&
-    a.provider === b.provider &&
+    a.connectionId === b.connectionId &&
+    a.connectionName === b.connectionName &&
     a.uploadedFiles === b.uploadedFiles &&
     a.totalFiles === b.totalFiles &&
     a.uploadedBytes === b.uploadedBytes &&

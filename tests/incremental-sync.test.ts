@@ -240,30 +240,29 @@ test('retrying one cloud preserves an already synced destination', () => {
     folderName: 'work-3',
     dayFolderId: 'day-3',
     uploadRelativePath: '2026-06-18/work-3',
-    legacyCloudMode: 'both',
     destinations: [
       {
-        provider: 'aliyun',
         connectionId: 'aliyun-prod',
         connectionName: '阿里云 OSS',
+        connectionType: 'aliyun-oss',
         uploadRelativePath: '2026-06-18/work-3'
       },
       {
-        provider: 'tencent',
         connectionId: 's3-compatible',
         connectionName: 'S3 兼容存储',
+        connectionType: 's3',
         uploadRelativePath: '2026-06-18/work-3'
       }
     ]
   })
-  destinationRepo.updateStatus(task.id, 'aliyun', 'synced')
-  destinationRepo.updateStatus(task.id, 'tencent', 'failed', 'network')
+  destinationRepo.updateStatus(task.id, 'aliyun-prod', 'synced')
+  destinationRepo.updateStatus(task.id, 's3-compatible', 'failed', 'network')
 
-  repo.retry(task.id, 'tencent')
+  repo.retry(task.id, 's3-compatible')
 
   assert.deepEqual(
-    destinationRepo.listByTask(task.id).map(({ provider, status }) => ({
-      provider,
+    destinationRepo.listByTask(task.id).map(({ legacyProvider, status }) => ({
+      provider: legacyProvider,
       status
     })),
     [

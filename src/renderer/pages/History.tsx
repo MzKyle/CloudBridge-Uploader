@@ -158,7 +158,7 @@ export default function History() {
 
   const handleRetry = useCallback(
     async (item: HistoryItem) => {
-      await retryTask(item.id, item.provider);
+      await retryTask(item.id, item.connectionId);
       await load();
     },
     [load]

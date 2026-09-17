@@ -68,12 +68,11 @@ function createGroupWithTask(
     folderName: 'session-1',
     dayFolderId: group.id,
     uploadRelativePath: `${groupName}/session-1`,
-    legacyCloudMode: 'aliyun',
     destinations: [
       {
-        provider: 'aliyun',
         connectionId: 'aliyun-prod',
         connectionName: '阿里云 OSS',
+        connectionType: 'aliyun-oss',
         uploadRelativePath: `${groupName}/session-1`
       }
     ],

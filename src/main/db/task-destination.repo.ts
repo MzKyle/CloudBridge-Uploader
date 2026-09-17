@@ -1,20 +1,28 @@
 import { v4 as uuid } from 'uuid'
 import type {
+  CloudConnectionType,
   CloudProvider,
   FileStatus,
-  LegacyCloudMode,
   TaskDestination,
   TaskFileDestination,
   TaskStatus,
   UploadPathMode
 } from '@shared/types'
-import { deriveLogicalFileStatus } from '@shared/cloud-upload'
+import {
+  deriveLogicalFileStatus,
+  legacyProviderForConnectionType
+} from '@shared/cloud-upload'
+import {
+  DEFAULT_ALIYUN_CONNECTION_ID,
+  DEFAULT_S3_CONNECTION_ID
+} from '@shared/constants'
 import { getDb } from './database'
 
 export interface TaskDestinationCreateInput {
-  provider: CloudProvider
   connectionId: string
   connectionName?: string | null
+  connectionType?: CloudConnectionType
+  legacyProvider?: CloudProvider
   prefix?: string
   uploadRelativePath?: string
   pathMode?: UploadPathMode
@@ -47,9 +55,9 @@ function rowToDestination(row: Record<string, unknown>): TaskDestination {
   return {
     id: row.id as string,
     taskId: row.task_id as string,
-    provider: row.provider as CloudProvider,
     connectionId: (row.connection_id as string) || legacyConnectionId(row.provider as CloudProvider),
     connectionName: (row.connection_name as string) || null,
+    legacyProvider: row.provider as CloudProvider,
     status: row.status as TaskStatus,
     prefix: (row.prefix as string) || '',
     uploadRelativePath: (row.upload_relative_path as string | null | undefined) ?? '',
@@ -71,8 +79,8 @@ function rowToFileDestination(row: Record<string, unknown>): TaskFileDestination
     id: row.id as string,
     taskFileId: row.task_file_id as string,
     taskDestinationId: row.task_destination_id as string,
-    provider: row.provider as CloudProvider,
     connectionId: (row.connection_id as string) || legacyConnectionId(row.provider as CloudProvider),
+    legacyProvider: row.provider as CloudProvider,
     status: row.status as FileStatus,
     objectKey: (row.object_key as string) || null,
     plannedObjectKey: (row.planned_object_key as string) || null,
@@ -109,7 +117,7 @@ export class TaskDestinationRepo {
         stmt.run(
           uuid(),
           taskId,
-          destination.provider,
+          legacyProviderForDestination(destination),
           destination.connectionId,
           destination.connectionName || null,
           initialStatus,
@@ -130,7 +138,7 @@ export class TaskDestinationRepo {
   listByTask(taskId: string): TaskDestination[] {
     return (
       getDb()
-        .prepare('SELECT * FROM task_destinations WHERE task_id = ? ORDER BY provider')
+        .prepare('SELECT * FROM task_destinations WHERE task_id = ? ORDER BY connection_id')
         .all(taskId) as Record<string, unknown>[]
     ).map(rowToDestination)
   }
@@ -149,7 +157,7 @@ export class TaskDestinationRepo {
           `SELECT *
            FROM task_destinations
            WHERE task_id IN (${placeholders})
-           ORDER BY task_id, provider`
+           ORDER BY task_id, connection_id`
         )
         .all(...chunk) as Record<string, unknown>[]
 
@@ -164,16 +172,16 @@ export class TaskDestinationRepo {
     return result
   }
 
-  get(taskId: string, provider: CloudProvider): TaskDestination | null {
+  get(taskId: string, connectionId: string): TaskDestination | null {
     const row = getDb()
-      .prepare('SELECT * FROM task_destinations WHERE task_id = ? AND provider = ?')
-      .get(taskId, provider) as Record<string, unknown> | undefined
+      .prepare('SELECT * FROM task_destinations WHERE task_id = ? AND connection_id = ?')
+      .get(taskId, connectionId) as Record<string, unknown> | undefined
     return row ? rowToDestination(row) : null
   }
 
   updateStatus(
     taskId: string,
-    provider: CloudProvider,
+    connectionId: string,
     status: TaskStatus,
     errorMessage?: string
   ): void {
@@ -188,23 +196,23 @@ export class TaskDestinationRepo {
       .prepare(
         `UPDATE task_destinations
          SET status = ?, error_message = ?, updated_at = ?, completed_at = ?
-         WHERE task_id = ? AND provider = ?`
+         WHERE task_id = ? AND connection_id = ?`
       )
-      .run(status, errorMessage || null, now, completedAt, taskId, provider)
+      .run(status, errorMessage || null, now, completedAt, taskId, connectionId)
   }
 
   updateUploadRelativePath(
     taskId: string,
-    provider: CloudProvider,
+    connectionId: string,
     uploadRelativePath: string
   ): void {
     getDb()
       .prepare(
         `UPDATE task_destinations
          SET upload_relative_path = ?, updated_at = ?
-         WHERE task_id = ? AND provider = ?`
+         WHERE task_id = ? AND connection_id = ?`
       )
-      .run(uploadRelativePath, new Date().toISOString(), taskId, provider)
+      .run(uploadRelativePath, new Date().toISOString(), taskId, connectionId)
   }
 
   updateIncompleteStatuses(
@@ -228,19 +236,19 @@ export class TaskDestinationRepo {
       .run(status, errorMessage || null, now, completedAt, taskId)
   }
 
-  setTotals(taskId: string, provider: CloudProvider, totalFiles: number, totalBytes: number): void {
+  setTotals(taskId: string, connectionId: string, totalFiles: number, totalBytes: number): void {
     getDb()
       .prepare(
         `UPDATE task_destinations
          SET total_files = ?, total_bytes = ?, updated_at = ?
-         WHERE task_id = ? AND provider = ?`
+         WHERE task_id = ? AND connection_id = ?`
       )
-      .run(totalFiles, totalBytes, new Date().toISOString(), taskId, provider)
+      .run(totalFiles, totalBytes, new Date().toISOString(), taskId, connectionId)
   }
 
   updateProgress(
     taskId: string,
-    provider: CloudProvider,
+    connectionId: string,
     uploadedFiles: number,
     uploadedBytes: number
   ): void {
@@ -248,9 +256,9 @@ export class TaskDestinationRepo {
       .prepare(
         `UPDATE task_destinations
          SET uploaded_files = ?, uploaded_bytes = ?, updated_at = ?
-         WHERE task_id = ? AND provider = ?`
+         WHERE task_id = ? AND connection_id = ?`
       )
-      .run(uploadedFiles, uploadedBytes, new Date().toISOString(), taskId, provider)
+      .run(uploadedFiles, uploadedBytes, new Date().toISOString(), taskId, connectionId)
   }
 
   ensureForTaskFiles(taskId: string): void {
@@ -337,10 +345,10 @@ export class TaskDestinationRepo {
     transaction()
   }
 
-  listFileTargets(taskId: string, provider?: CloudProvider): FileDestinationUploadTarget[] {
-    const providerCondition = provider ? 'AND tfd.provider = ?' : ''
+  listFileTargets(taskId: string, connectionId?: string): FileDestinationUploadTarget[] {
+    const connectionCondition = connectionId ? 'AND tfd.connection_id = ?' : ''
     const params: unknown[] = [taskId]
-    if (provider) params.push(provider)
+    if (connectionId) params.push(connectionId)
     const rows = getDb()
       .prepare(
         `SELECT tfd.*, tf.task_id, tf.relative_path, tf.file_size,
@@ -348,8 +356,8 @@ export class TaskDestinationRepo {
           tf.source_status, tf.stable_count
          FROM task_file_destinations tfd
          INNER JOIN task_files tf ON tf.id = tfd.task_file_id
-         WHERE tf.task_id = ? ${providerCondition}
-         ORDER BY tf.created_at, tfd.provider`
+         WHERE tf.task_id = ? ${connectionCondition}
+         ORDER BY tf.created_at, tfd.connection_id`
       )
       .all(...params) as Record<string, unknown>[]
     return rows.map((row) => ({
@@ -382,7 +390,7 @@ export class TaskDestinationRepo {
            AND tf.source_status = 'present'
            AND tf.stable_count >= ?
            AND (tf.next_retry_at IS NULL OR tf.next_retry_at <= ?)
-         ORDER BY tf.created_at, tfd.provider`
+         ORDER BY tf.created_at, tfd.connection_id`
       )
       .all(taskId, requiredStableChecks, now) as Record<string, unknown>[]
     return rows.map((row) => ({
@@ -400,7 +408,7 @@ export class TaskDestinationRepo {
 
   summarizeFileTargets(
     taskId: string,
-    provider: CloudProvider,
+    connectionId: string,
     now = new Date().toISOString()
   ): FileDestinationSummary {
     const row = getDb().prepare(
@@ -419,8 +427,8 @@ export class TaskDestinationRepo {
            THEN 1 ELSE 0 END) AS retry_waiting
        FROM task_file_destinations tfd
        INNER JOIN task_files tf ON tf.id = tfd.task_file_id
-       WHERE tf.task_id = ? AND tfd.provider = ?`
-    ).get(now, taskId, provider) as Record<string, number>
+       WHERE tf.task_id = ? AND tfd.connection_id = ?`
+    ).get(now, taskId, connectionId) as Record<string, number>
     return {
       total: row.total || 0,
       totalBytes: row.total_bytes || 0,
@@ -435,17 +443,17 @@ export class TaskDestinationRepo {
 
   listFailedFileTargetExamples(
     taskId: string,
-    provider: CloudProvider,
+    connectionId: string,
     limit = 3
   ): Array<{ relativePath: string; errorMessage: string | null }> {
     const rows = getDb().prepare(
       `SELECT tf.relative_path, tfd.error_message
        FROM task_file_destinations tfd
        INNER JOIN task_files tf ON tf.id = tfd.task_file_id
-       WHERE tf.task_id = ? AND tfd.provider = ? AND tfd.status = 'failed'
+       WHERE tf.task_id = ? AND tfd.connection_id = ? AND tfd.status = 'failed'
        ORDER BY tf.created_at
        LIMIT ?`
-    ).all(taskId, provider, Math.max(1, limit)) as Array<{
+    ).all(taskId, connectionId, Math.max(1, limit)) as Array<{
       relative_path: string
       error_message: string | null
     }>
@@ -485,7 +493,7 @@ export class TaskDestinationRepo {
     return status
   }
 
-  recalculateProgress(taskId: string, provider: CloudProvider): void {
+  recalculateProgress(taskId: string, connectionId: string): void {
     const row = getDb().prepare(
       `SELECT
          COUNT(*) AS total_files,
@@ -494,31 +502,31 @@ export class TaskDestinationRepo {
          COALESCE(SUM(CASE WHEN tfd.status = 'completed' THEN tf.file_size ELSE 0 END), 0) AS uploaded_bytes
        FROM task_file_destinations tfd
        INNER JOIN task_files tf ON tf.id = tfd.task_file_id
-       WHERE tf.task_id = ? AND tfd.provider = ?`
-    ).get(taskId, provider) as Record<string, number>
+       WHERE tf.task_id = ? AND tfd.connection_id = ?`
+    ).get(taskId, connectionId) as Record<string, number>
     this.setTotals(
       taskId,
-      provider,
+      connectionId,
       row.total_files || 0,
       row.total_bytes || 0
     )
     this.updateProgress(
       taskId,
-      provider,
+      connectionId,
       row.uploaded_files || 0,
       row.uploaded_bytes || 0
     )
   }
 
-  resetFailed(taskId: string, provider?: CloudProvider): void {
+  resetFailed(taskId: string, connectionId?: string): void {
     const db = getDb()
     const now = new Date().toISOString()
-    const providerCondition = provider ? 'AND provider = ?' : ''
+    const connectionCondition = connectionId ? 'AND connection_id = ?' : ''
     const destinationParams: unknown[] = [now, taskId]
     const fileParams: unknown[] = [now, taskId]
-    if (provider) {
-      destinationParams.push(provider)
-      fileParams.push(provider)
+    if (connectionId) {
+      destinationParams.push(connectionId)
+      fileParams.push(connectionId)
     }
 
     db.prepare(
@@ -533,7 +541,7 @@ export class TaskDestinationRepo {
            ELSE NULL
          END,
          updated_at = ?
-       WHERE task_id = ? ${providerCondition}`
+       WHERE task_id = ? ${connectionCondition}`
     ).run(...destinationParams)
 
     db.prepare(
@@ -541,7 +549,7 @@ export class TaskDestinationRepo {
        SET status = CASE WHEN status = 'completed' THEN status ELSE 'pending' END,
          error_message = NULL, updated_at = ?
        WHERE task_file_id IN (SELECT id FROM task_files WHERE task_id = ?)
-       ${providerCondition}`
+       ${connectionCondition}`
     ).run(...fileParams)
 
     const fileRows = db
@@ -561,9 +569,14 @@ function legacyConnectionId(provider: CloudProvider): string {
   return provider === 'aliyun' ? 'aliyun-prod' : 's3-compatible'
 }
 
-export function legacyModeFromProviders(providers: CloudProvider[]): LegacyCloudMode {
-  const unique = new Set(providers)
-  if (unique.has('aliyun') && unique.has('tencent')) return 'both'
-  if (unique.has('tencent')) return 'tencent'
-  return 'aliyun'
+function legacyProviderForDestination(
+  destination: TaskDestinationCreateInput
+): CloudProvider {
+  if (destination.legacyProvider) return destination.legacyProvider
+  if (destination.connectionType) {
+    return legacyProviderForConnectionType(destination.connectionType)
+  }
+  if (destination.connectionId === DEFAULT_ALIYUN_CONNECTION_ID) return 'aliyun'
+  if (destination.connectionId === DEFAULT_S3_CONNECTION_ID) return 'tencent'
+  return 'tencent'
 }

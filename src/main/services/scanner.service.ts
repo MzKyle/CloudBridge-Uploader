@@ -688,10 +688,7 @@ export class ScannerService {
     return taskRepo.create({
       folderPath: dirPath,
       folderName,
-      ossPrefix: snapshot.destinations.find((destination) =>
-        destination.legacyProvider === 'aliyun'
-      )?.prefix || '',
-      legacyCloudMode: snapshot.legacyCloudMode,
+      ossPrefix: snapshot.destinations[0]?.prefix || '',
       destinations: this.taskDestinationsFromSnapshot(
         snapshot,
         uploadRelativePath
@@ -711,9 +708,9 @@ export class ScannerService {
     uploadRelativePath: string
   ): TaskDestinationCreateInput[] {
     return snapshot.destinations.map((destination) => ({
-      provider: destination.legacyProvider,
       connectionId: destination.connectionId,
       connectionName: destination.connectionName,
+      connectionType: destination.connectionType,
       prefix: destination.prefix,
       uploadRelativePath,
       pathMode: 'target-root',

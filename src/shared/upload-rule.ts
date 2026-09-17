@@ -5,9 +5,7 @@ import {
 } from './constants'
 import {
   connectionConfigPrefix,
-  findConnection,
-  legacyModeForConnections,
-  legacyProviderForConnection
+  findConnection
 } from './cloud-upload'
 import type {
   AppSettings,
@@ -15,11 +13,9 @@ import type {
   CloudConnection,
   CloudConnectionConfig,
   CloudConnectionType,
-  CloudProvider,
   CompletionPolicy,
   DiscoveryConfig,
   FilterRules,
-  LegacyCloudMode,
   PathMappingConfig,
   PathVariables,
   UploadDestinationRef,
@@ -42,12 +38,10 @@ export interface ResolvedRuleDestination {
   connectionId: string
   connectionName: string
   connectionType: CloudConnectionType
-  legacyProvider: CloudProvider
   prefix: string
 }
 
 export interface RuleUploadSnapshot {
-  legacyCloudMode: LegacyCloudMode
   ruleId: string
   ruleName: string
   ruleSnapshot: UploadRule
@@ -198,9 +192,6 @@ export function resolveRuleUploadSnapshot(
 ): RuleUploadSnapshot {
   const destinations = resolveRuleDestinations(rule, connections)
   return {
-    legacyCloudMode: legacyModeForConnections(
-      destinations.map((destination) => ({ type: destination.connectionType }))
-    ),
     ruleId: rule.id,
     ruleName: rule.name,
     ruleSnapshot: rule,
@@ -224,7 +215,6 @@ export function resolveRuleDestinations(
       connectionId: connection.id,
       connectionName: connection.name,
       connectionType: connection.type,
-      legacyProvider: legacyProviderForConnection(connection),
       prefix: connectionConfigPrefix(connection.config)
     }
   })

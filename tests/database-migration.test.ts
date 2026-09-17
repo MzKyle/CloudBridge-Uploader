@@ -275,13 +275,13 @@ test('startup reconciliation resumes existing sources and skips deleted sources'
 
   db.prepare(`
     INSERT INTO task_destinations (
-      id, task_id, provider, status, prefix, created_at, updated_at
-    ) VALUES (?, ?, 'aliyun', 'uploading', '', ?, ?)
+      id, task_id, provider, connection_id, connection_name, status, prefix, created_at, updated_at
+    ) VALUES (?, ?, 'aliyun', 'aliyun-prod', '阿里云 OSS', 'uploading', '', ?, ?)
   `).run('destination-existing', 'existing-task', now, now)
   db.prepare(`
     INSERT INTO task_destinations (
-      id, task_id, provider, status, prefix, created_at, updated_at
-    ) VALUES (?, ?, 'aliyun', 'uploading', '', ?, ?)
+      id, task_id, provider, connection_id, connection_name, status, prefix, created_at, updated_at
+    ) VALUES (?, ?, 'aliyun', 'aliyun-prod', '阿里云 OSS', 'uploading', '', ?, ?)
   `).run('destination-missing', 'missing-task', now, now)
 
   reconcileStartupState(db)

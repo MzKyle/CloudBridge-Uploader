@@ -29,7 +29,7 @@ interface TaskDetailDrawerProps {
   onOpenChange: (open: boolean) => void;
   onPause: (id: string) => void;
   onResume: (id: string) => void;
-  onRetry: (id: string, provider: CloudProvider) => void;
+  onRetry: (id: string, connectionId: string) => void;
   onRestore: (id: string) => void;
   onCancel: (id: string) => void;
 }
@@ -66,7 +66,7 @@ export function TaskDetailDrawer({
   const [error, setError] = useState<string | null>(null);
 
   const destination = task?.destinations.find(
-    (item) => item.provider === provider,
+    (item) => item.legacyProvider === provider,
   );
   const status = destination?.status ?? task?.status;
   const uploadedFiles = progress?.uploadedFiles ?? destination?.uploadedFiles ?? 0;
@@ -117,7 +117,7 @@ export function TaskDetailDrawer({
           <Button
             variant="outline"
             size="sm"
-            onClick={() => onRetry(task.id, provider)}
+            onClick={() => destination && onRetry(task.id, destination.connectionId)}
           >
             <RotateCcw className="mr-1 h-4 w-4" />
             重试此云端
@@ -237,12 +237,12 @@ export function TaskDetailDrawer({
             <div className="max-h-[55vh] overflow-auto rounded-md border text-xs">
               {detail.files.map((file) => {
                 const fileDestination = file.destinations.find(
-                  (item) => item.provider === provider,
+                  (item) => item.connectionId === destination?.connectionId,
                 );
                 const fileStatus = fileDestination?.status || file.status;
                 return (
                   <div
-                    key={`${file.id}:${provider}`}
+                    key={`${file.id}:${destination?.connectionId || provider}`}
                     className="border-b p-2 last:border-b-0"
                   >
                     <div className="flex justify-between gap-3">

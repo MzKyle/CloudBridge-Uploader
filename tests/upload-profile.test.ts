@@ -100,16 +100,15 @@ test('normalizes cloud connections and resolves rule upload snapshots', () => {
   const snapshot = resolveRuleUploadSnapshot(rule, connections)
 
   assert.equal(snapshot.ruleId, 'multi-cloud')
-  assert.equal(snapshot.legacyCloudMode, 'both')
   assert.deepEqual(
     snapshot.destinations.map((destination) => ({
       connectionId: destination.connectionId,
-      legacyProvider: destination.legacyProvider,
+      connectionType: destination.connectionType,
       prefix: destination.prefix
     })),
     [
-      { connectionId: 'aliyun-prod', legacyProvider: 'aliyun', prefix: '' },
-      { connectionId: 'archive-s3', legacyProvider: 'tencent', prefix: 'cold' }
+      { connectionId: 'aliyun-prod', connectionType: 'aliyun-oss', prefix: '' },
+      { connectionId: 'archive-s3', connectionType: 's3', prefix: 'cold' }
     ]
   )
 })

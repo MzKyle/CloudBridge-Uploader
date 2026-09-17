@@ -39,7 +39,7 @@ export function useTaskProgress(): void {
     (_event: unknown, data: unknown) => {
       const progress = data as TaskProgress
       progressBufferRef.current.set(
-        progressKey(progress.taskId, progress.provider),
+        progressKey(progress.taskId, progress.connectionId),
         progress
       )
       if (!progressTimerRef.current) {

@@ -304,10 +304,10 @@ export default function Dashboard() {
 
   const handleRetry = useCallback(async (
     taskId: string,
-    retryProvider: CloudProvider
+    connectionId: string
   ) => {
     try {
-      await retryTask(taskId, retryProvider);
+      await retryTask(taskId, connectionId);
       showToast("任务已重新排队", "success");
     } catch (err) {
       showToast(`重试失败: ${err}`, "error");
@@ -388,7 +388,7 @@ export default function Dashboard() {
   const providerTasks = useMemo(
     () =>
       tasks.filter((task) =>
-        task.destinations.some((destination) => destination.provider === provider),
+        task.destinations.some((destination) => destination.legacyProvider === provider),
       ),
     [tasks, provider],
   );
@@ -438,13 +438,20 @@ export default function Dashboard() {
     () => providerTasks.find((task) => task.id === detailTaskId) ?? null,
     [detailTaskId, providerTasks],
   );
+  const detailConnectionId = useMemo(
+    () =>
+      detailTask?.destinations.find(
+        (destination) => destination.legacyProvider === provider,
+      )?.connectionId,
+    [detailTask, provider],
+  );
   const detailProgress = useTaskStore(
     useCallback(
       (state) =>
-        detailTaskId
-          ? state.progress[progressKey(detailTaskId, provider)]
+        detailTaskId && detailConnectionId
+          ? state.progress[progressKey(detailTaskId, detailConnectionId)]
           : undefined,
-      [detailTaskId, provider],
+      [detailConnectionId, detailTaskId],
     ),
   );
 
@@ -943,14 +950,20 @@ const TaskCardWithProgress = memo(function TaskCardWithProgress({
   onPause: (id: string) => void;
   onResume: (id: string) => void;
   onCancel: (id: string) => void;
-  onRetry: (id: string, provider: CloudProvider) => void;
+  onRetry: (id: string, connectionId: string) => void;
   onRestore: (id: string) => void;
   onOpenDetail: (task: Task) => void;
 }) {
+  const connectionId = task.destinations.find(
+    (destination) => destination.legacyProvider === provider,
+  )?.connectionId;
   const progress = useTaskStore(
     useCallback(
-      (state) => state.progress[progressKey(task.id, provider)],
-      [provider, task.id],
+      (state) =>
+        connectionId
+          ? state.progress[progressKey(task.id, connectionId)]
+          : undefined,
+      [connectionId, task.id],
     ),
   );
 
@@ -990,8 +1003,17 @@ const DayFolderCardWithSpeed = memo(function DayFolderCardWithSpeed({
     useCallback(
       (state) =>
         tasks.reduce(
-          (sum, task) =>
-            sum + (state.progress[progressKey(task.id, provider)]?.speed || 0),
+          (sum, task) => {
+            const speed = task.destinations
+              .filter((destination) => destination.legacyProvider === provider)
+              .reduce(
+                (total, destination) =>
+                  total +
+                  (state.progress[progressKey(task.id, destination.connectionId)]?.speed || 0),
+                0,
+              );
+            return sum + speed;
+          },
           0,
         ),
       [provider, tasks],

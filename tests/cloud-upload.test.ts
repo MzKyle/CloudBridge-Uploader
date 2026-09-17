@@ -3,16 +3,12 @@ import test from 'node:test'
 import {
   deriveLogicalFileStatus,
   deriveTaskStatus,
-  legacyModeForConnections,
   legacyProviderForConnectionType
 } from '../src/shared/cloud-upload'
 
 test('maps connection types to legacy provider compatibility fields', () => {
   assert.equal(legacyProviderForConnectionType('aliyun-oss'), 'aliyun')
   assert.equal(legacyProviderForConnectionType('s3'), 'tencent')
-  assert.equal(legacyModeForConnections([{ type: 'aliyun-oss' }]), 'aliyun')
-  assert.equal(legacyModeForConnections([{ type: 's3' }]), 'tencent')
-  assert.equal(legacyModeForConnections([{ type: 'aliyun-oss' }, { type: 's3' }]), 'both')
 })
 
 test('requires every selected cloud to complete a logical file', () => {

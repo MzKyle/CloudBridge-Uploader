@@ -61,8 +61,8 @@ export async function restoreTask(taskId: string): Promise<void> {
   await api.invoke(IPC.TASK_RESTORE, { taskId })
 }
 
-export async function retryTask(taskId: string, provider?: CloudProvider): Promise<void> {
-  await api.invoke(IPC.TASK_RETRY, { taskId, provider })
+export async function retryTask(taskId: string, connectionId?: string): Promise<void> {
+  await api.invoke(IPC.TASK_RETRY, { taskId, connectionId })
 }
 
 export async function fetchUploadQueueStatus(): Promise<UploadQueueStatus> {

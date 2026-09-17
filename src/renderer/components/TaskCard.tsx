@@ -42,7 +42,7 @@ interface TaskCardProps {
   onPause: (id: string) => void;
   onResume: (id: string) => void;
   onCancel: (id: string) => void;
-  onRetry: (id: string, provider: CloudProvider) => void;
+  onRetry: (id: string, connectionId: string) => void;
   onRestore: (id: string) => void;
   onOpenDetail: (task: Task) => void;
 }
@@ -58,7 +58,7 @@ export function TaskCard({
   onRestore,
   onOpenDetail,
 }: TaskCardProps) {
-  const destination = task.destinations.find((item) => item.provider === provider);
+  const destination = task.destinations.find((item) => item.legacyProvider === provider);
   if (!destination) return null;
   const status = destination.status;
   const uploadedFiles = progress?.uploadedFiles ?? destination.uploadedFiles;
@@ -104,7 +104,7 @@ export function TaskCard({
                 : TASK_STATUS_LABELS[status] || status}
             </Badge>
             <span className="text-xs text-muted-foreground">
-              {CLOUD_PROVIDER_LABELS[provider]}
+              {destination.connectionName || CLOUD_PROVIDER_LABELS[provider]}
             </span>
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
@@ -149,7 +149,7 @@ export function TaskCard({
                   title="重试此云端"
                   onClick={(event) => {
                     event.stopPropagation();
-                    onRetry(task.id, provider);
+                    onRetry(task.id, destination.connectionId);
                   }}
                 >
                   <RotateCcw className="h-3.5 w-3.5" />

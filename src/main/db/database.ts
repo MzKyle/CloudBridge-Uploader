@@ -116,7 +116,7 @@ export function runMigrations(db: Database.Database): void {
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL,
       provider TEXT NOT NULL,
-      connection_id TEXT,
+      connection_id TEXT NOT NULL,
       connection_name TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       prefix TEXT NOT NULL DEFAULT '',
@@ -131,7 +131,7 @@ export function runMigrations(db: Database.Database): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       completed_at TEXT,
-      UNIQUE(task_id, provider),
+      UNIQUE(task_id, connection_id),
       FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
     );
 
@@ -140,7 +140,7 @@ export function runMigrations(db: Database.Database): void {
       task_file_id TEXT NOT NULL,
       task_destination_id TEXT NOT NULL,
       provider TEXT NOT NULL,
-      connection_id TEXT,
+      connection_id TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending',
       object_key TEXT,
       planned_object_key TEXT,
@@ -148,7 +148,7 @@ export function runMigrations(db: Database.Database): void {
       error_message TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      UNIQUE(task_file_id, provider),
+      UNIQUE(task_file_id, connection_id),
       FOREIGN KEY (task_file_id) REFERENCES task_files(id) ON DELETE CASCADE,
       FOREIGN KEY (task_destination_id) REFERENCES task_destinations(id) ON DELETE CASCADE
     );
@@ -156,6 +156,7 @@ export function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_task_files_task_id ON task_files(task_id);
     CREATE INDEX IF NOT EXISTS idx_task_files_status ON task_files(status);
     CREATE INDEX IF NOT EXISTS idx_task_destinations_task_id ON task_destinations(task_id);
+    CREATE INDEX IF NOT EXISTS idx_task_destinations_connection_status ON task_destinations(connection_id, status);
     CREATE INDEX IF NOT EXISTS idx_task_destinations_provider_status ON task_destinations(provider, status);
     CREATE INDEX IF NOT EXISTS idx_task_file_destinations_task_file_id ON task_file_destinations(task_file_id);
     CREATE INDEX IF NOT EXISTS idx_task_file_destinations_destination_id ON task_file_destinations(task_destination_id);
@@ -268,6 +269,7 @@ export function runMigrations(db: Database.Database): void {
     END)
     WHERE connection_id IS NULL OR connection_id = ''
   `)
+  migrateDestinationIdentityConstraints(db)
 
   const dayFolderColumns = db.pragma('table_info(day_folders)') as Array<{ name: string }>
   if (!dayFolderColumns.some((c) => c.name === 'ignored')) {
@@ -420,11 +422,12 @@ export function runMigrations(db: Database.Database): void {
   if (!isDataMigrationDone(db, DATA_MIGRATION_DESTINATIONS)) {
     const migratedDestinations = db.prepare(
       `INSERT OR IGNORE INTO task_destinations (
-        id, task_id, provider, status, prefix, total_files, uploaded_files,
+        id, task_id, provider, connection_id, connection_name, status, prefix, total_files, uploaded_files,
         total_bytes, uploaded_bytes, error_message, created_at, updated_at,
         completed_at, upload_relative_path, path_mode, object_key_template
       )
-      SELECT lower(hex(randomblob(16))), id, 'aliyun', status, COALESCE(oss_prefix, ''),
+      SELECT lower(hex(randomblob(16))), id, 'aliyun', 'aliyun-prod', '阿里云 OSS',
+        status, COALESCE(oss_prefix, ''),
         total_files, uploaded_files, total_bytes, uploaded_bytes, error_message,
         created_at, updated_at, completed_at, COALESCE(upload_relative_path, ''),
         'target-root', NULL
@@ -436,15 +439,15 @@ export function runMigrations(db: Database.Database): void {
 
     const migratedFileDestinations = db.prepare(
       `INSERT OR IGNORE INTO task_file_destinations (
-        id, task_file_id, task_destination_id, provider, status, object_key,
+        id, task_file_id, task_destination_id, provider, connection_id, status, object_key,
         upload_id, error_message, created_at, updated_at
       )
-      SELECT lower(hex(randomblob(16))), tf.id, td.id, 'aliyun', tf.status,
+      SELECT lower(hex(randomblob(16))), tf.id, td.id, 'aliyun', td.connection_id, tf.status,
         tf.oss_key, tf.upload_id, tf.error_message, tf.created_at, tf.updated_at
       FROM tasks t
       INNER JOIN task_files tf ON tf.task_id = t.id
       INNER JOIN task_destinations td
-        ON td.task_id = t.id AND td.provider = 'aliyun'
+        ON td.task_id = t.id AND td.connection_id = 'aliyun-prod'
       WHERE t.status != 'completed'
         AND NOT EXISTS (
         SELECT 1
@@ -460,6 +463,270 @@ export function runMigrations(db: Database.Database): void {
     }
     markDataMigrationDone(db, DATA_MIGRATION_DESTINATIONS)
   }
+}
+
+function migrateDestinationIdentityConstraints(db: Database.Database): void {
+  const destinationReady =
+    hasUniqueIndex(db, 'task_destinations', ['task_id', 'connection_id']) &&
+    isNotNullColumn(db, 'task_destinations', 'connection_id')
+  const fileDestinationReady =
+    hasUniqueIndex(db, 'task_file_destinations', ['task_file_id', 'connection_id']) &&
+    isNotNullColumn(db, 'task_file_destinations', 'connection_id')
+  if (destinationReady && fileDestinationReady) {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_task_destinations_connection_status
+      ON task_destinations(connection_id, status)
+    `)
+    return
+  }
+
+  log.info('迁移: 重建任务目标唯一约束为 connection_id')
+  const previousForeignKeys = db.pragma('foreign_keys', { simple: true }) as number
+  db.pragma('foreign_keys = OFF')
+  try {
+    const transaction = db.transaction(() => {
+      db.exec(`
+        CREATE TABLE task_destinations_next (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          connection_id TEXT NOT NULL,
+          connection_name TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          prefix TEXT NOT NULL DEFAULT '',
+          upload_relative_path TEXT NOT NULL DEFAULT '',
+          path_mode TEXT NOT NULL DEFAULT 'target-root',
+          object_key_template TEXT,
+          total_files INTEGER NOT NULL DEFAULT 0,
+          uploaded_files INTEGER NOT NULL DEFAULT 0,
+          total_bytes INTEGER NOT NULL DEFAULT 0,
+          uploaded_bytes INTEGER NOT NULL DEFAULT 0,
+          error_message TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          completed_at TEXT,
+          UNIQUE(task_id, connection_id),
+          FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+
+        WITH normalized AS (
+          SELECT
+            rowid,
+            id,
+            task_id,
+            COALESCE(NULLIF(provider, ''), 'tencent') AS provider,
+            CASE
+              WHEN connection_id IS NOT NULL AND connection_id != '' THEN connection_id
+              WHEN provider = 'aliyun' THEN 'aliyun-prod'
+              WHEN provider = 'tencent' THEN 's3-compatible'
+              ELSE COALESCE(NULLIF(provider, ''), 's3-compatible')
+            END AS resolved_connection_id,
+            CASE
+              WHEN connection_name IS NOT NULL AND connection_name != '' THEN connection_name
+              WHEN provider = 'aliyun' THEN '阿里云 OSS'
+              WHEN provider = 'tencent' THEN 'S3 兼容存储'
+              ELSE connection_name
+            END AS resolved_connection_name,
+            status,
+            prefix,
+            upload_relative_path,
+            path_mode,
+            object_key_template,
+            total_files,
+            uploaded_files,
+            total_bytes,
+            uploaded_bytes,
+            error_message,
+            created_at,
+            updated_at,
+            completed_at
+          FROM task_destinations
+        )
+        INSERT INTO task_destinations_next (
+          id, task_id, provider, connection_id, connection_name, status, prefix,
+          upload_relative_path, path_mode, object_key_template, total_files,
+          uploaded_files, total_bytes, uploaded_bytes, error_message,
+          created_at, updated_at, completed_at
+        )
+        SELECT
+          id, task_id, provider, resolved_connection_id, resolved_connection_name,
+          status, COALESCE(prefix, ''), COALESCE(upload_relative_path, ''),
+          COALESCE(path_mode, 'target-root'), object_key_template,
+          COALESCE(total_files, 0), COALESCE(uploaded_files, 0),
+          COALESCE(total_bytes, 0), COALESCE(uploaded_bytes, 0),
+          error_message, created_at, updated_at, completed_at
+        FROM normalized
+        WHERE rowid IN (
+          SELECT MIN(rowid)
+          FROM normalized
+          GROUP BY task_id, resolved_connection_id
+        );
+
+        CREATE TABLE task_file_destinations_next (
+          id TEXT PRIMARY KEY,
+          task_file_id TEXT NOT NULL,
+          task_destination_id TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          connection_id TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          object_key TEXT,
+          planned_object_key TEXT,
+          upload_id TEXT,
+          error_message TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(task_file_id, connection_id),
+          FOREIGN KEY (task_file_id) REFERENCES task_files(id) ON DELETE CASCADE,
+          FOREIGN KEY (task_destination_id) REFERENCES task_destinations_next(id) ON DELETE CASCADE
+        );
+
+        WITH normalized AS (
+          SELECT
+            tfd.rowid,
+            tfd.id,
+            tfd.task_file_id,
+            tf.task_id,
+            COALESCE(NULLIF(tfd.provider, ''), 'tencent') AS provider,
+            CASE
+              WHEN tfd.connection_id IS NOT NULL AND tfd.connection_id != '' THEN tfd.connection_id
+              WHEN tfd.provider = 'aliyun' THEN 'aliyun-prod'
+              WHEN tfd.provider = 'tencent' THEN 's3-compatible'
+              ELSE COALESCE(NULLIF(tfd.provider, ''), 's3-compatible')
+            END AS resolved_connection_id,
+            tfd.status,
+            tfd.object_key,
+            tfd.planned_object_key,
+            tfd.upload_id,
+            tfd.error_message,
+            tfd.created_at,
+            tfd.updated_at
+          FROM task_file_destinations tfd
+          INNER JOIN task_files tf ON tf.id = tfd.task_file_id
+        )
+        INSERT INTO task_file_destinations_next (
+          id, task_file_id, task_destination_id, provider, connection_id,
+          status, object_key, planned_object_key, upload_id, error_message,
+          created_at, updated_at
+        )
+        SELECT
+          normalized.id,
+          normalized.task_file_id,
+          td.id,
+          normalized.provider,
+          normalized.resolved_connection_id,
+          normalized.status,
+          normalized.object_key,
+          normalized.planned_object_key,
+          normalized.upload_id,
+          normalized.error_message,
+          normalized.created_at,
+          normalized.updated_at
+        FROM normalized
+        INNER JOIN task_destinations_next td
+          ON td.task_id = normalized.task_id
+         AND td.connection_id = normalized.resolved_connection_id
+        WHERE normalized.rowid IN (
+          SELECT MIN(rowid)
+          FROM normalized
+          GROUP BY task_file_id, resolved_connection_id
+        );
+      `)
+
+      const destinationCount = db.prepare(
+        `SELECT COUNT(*) AS count
+         FROM (
+           SELECT task_id,
+             CASE
+               WHEN connection_id IS NOT NULL AND connection_id != '' THEN connection_id
+               WHEN provider = 'aliyun' THEN 'aliyun-prod'
+               WHEN provider = 'tencent' THEN 's3-compatible'
+               ELSE COALESCE(NULLIF(provider, ''), 's3-compatible')
+             END AS connection_id
+           FROM task_destinations
+           GROUP BY task_id, connection_id
+         )`
+      ).get() as { count: number }
+      const copiedDestinationCount = db.prepare(
+        'SELECT COUNT(*) AS count FROM task_destinations_next'
+      ).get() as { count: number }
+      if (destinationCount.count !== copiedDestinationCount.count) {
+        throw new Error('task_destinations connection_id migration count mismatch')
+      }
+
+      const fileDestinationCount = db.prepare(
+        `SELECT COUNT(*) AS count
+         FROM (
+           SELECT task_file_id,
+             CASE
+               WHEN connection_id IS NOT NULL AND connection_id != '' THEN connection_id
+               WHEN provider = 'aliyun' THEN 'aliyun-prod'
+               WHEN provider = 'tencent' THEN 's3-compatible'
+               ELSE COALESCE(NULLIF(provider, ''), 's3-compatible')
+             END AS connection_id
+           FROM task_file_destinations
+           GROUP BY task_file_id, connection_id
+         )`
+      ).get() as { count: number }
+      const copiedFileDestinationCount = db.prepare(
+        'SELECT COUNT(*) AS count FROM task_file_destinations_next'
+      ).get() as { count: number }
+      if (fileDestinationCount.count !== copiedFileDestinationCount.count) {
+        throw new Error('task_file_destinations connection_id migration count mismatch')
+      }
+
+      db.exec(`
+        DROP TABLE task_file_destinations;
+        DROP TABLE task_destinations;
+        ALTER TABLE task_destinations_next RENAME TO task_destinations;
+        ALTER TABLE task_file_destinations_next RENAME TO task_file_destinations;
+
+        CREATE INDEX IF NOT EXISTS idx_task_destinations_task_id ON task_destinations(task_id);
+        CREATE INDEX IF NOT EXISTS idx_task_destinations_connection_status ON task_destinations(connection_id, status);
+        CREATE INDEX IF NOT EXISTS idx_task_destinations_provider_status ON task_destinations(provider, status);
+        CREATE INDEX IF NOT EXISTS idx_task_file_destinations_task_file_id ON task_file_destinations(task_file_id);
+        CREATE INDEX IF NOT EXISTS idx_task_file_destinations_destination_id ON task_file_destinations(task_destination_id);
+        CREATE INDEX IF NOT EXISTS idx_task_file_destinations_status_file
+        ON task_file_destinations(status, task_file_id);
+      `)
+    })
+    transaction()
+  } finally {
+    db.pragma(`foreign_keys = ${previousForeignKeys ? 'ON' : 'OFF'}`)
+  }
+  log.info('迁移: 任务目标唯一约束已切换为 connection_id')
+}
+
+function hasUniqueIndex(
+  db: Database.Database,
+  table: string,
+  columns: string[]
+): boolean {
+  const indexes = db.pragma(`index_list(${table})`) as Array<{
+    name: string
+    unique: number
+  }>
+  return indexes.some((index) => {
+    if (!index.unique) return false
+    const indexedColumns = (db.pragma(`index_info(${index.name})`) as Array<{
+      name: string
+    }>).map((column) => column.name)
+    return (
+      indexedColumns.length === columns.length &&
+      indexedColumns.every((column, index) => column === columns[index])
+    )
+  })
+}
+
+function isNotNullColumn(
+  db: Database.Database,
+  table: string,
+  columnName: string
+): boolean {
+  const columns = db.pragma(`table_info(${table})`) as Array<{
+    name: string
+    notnull: number
+  }>
+  return columns.some((column) => column.name === columnName && Boolean(column.notnull))
 }
 
 function isDataMigrationDone(db: Database.Database, key: string): boolean {

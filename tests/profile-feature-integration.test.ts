@@ -167,12 +167,11 @@ test('manual tasks persist V3 rule snapshots and connection destinations', () =>
     const task = new TaskRepo().create({
       folderPath: '/data/archive/2026-06-29/run-1',
       folderName: 'run-1',
-      legacyCloudMode: 'aliyun',
       destinations: [
         {
-          provider: 'aliyun',
           connectionId: 'archive-oss',
           connectionName: 'Archive OSS',
+          connectionType: 'aliyun-oss',
           prefix: 'archive',
           uploadRelativePath: 'run-1'
         }
@@ -197,14 +196,14 @@ test('manual tasks persist V3 rule snapshots and connection destinations', () =>
     })
     assert.deepEqual(
       task.destinations.map((destination) => ({
-        provider: destination.provider,
+        legacyProvider: destination.legacyProvider,
         connectionId: destination.connectionId,
         connectionName: destination.connectionName,
         prefix: destination.prefix
       })),
       [
         {
-          provider: 'aliyun',
+          legacyProvider: 'aliyun',
           connectionId: 'archive-oss',
           connectionName: 'Archive OSS',
           prefix: 'archive'
@@ -251,12 +250,11 @@ test('cloud connection store saves, resolves and blocks referenced deletes', () 
     const task = new TaskRepo().create({
       folderPath: '/data/archive/pending',
       folderName: 'pending',
-      legacyCloudMode: 'aliyun',
       destinations: [
         {
-          provider: 'aliyun',
           connectionId: 'archive-oss',
           connectionName: 'Archive OSS',
+          connectionType: 'aliyun-oss',
           prefix: 'cold'
         }
       ],
