@@ -1,14 +1,16 @@
 import { getDb } from './database'
 import { DEFAULT_SETTINGS } from '@shared/constants'
+import { normalizeScanConfig } from '@shared/scan-config'
 import {
-  normalizeScanConfig,
-  normalizeScanDirectories,
-  normalizeProviderDirectories
-} from '@shared/scan-config'
-import { normalizeUploadPathConfig } from '@shared/upload-path'
-import { normalizeProfiles } from '@shared/upload-profile'
-import type { AppSettings, CloudConfig, ScanConfig } from '@shared/types'
+  normalizeCloudConnections,
+  normalizeUploadRules
+} from '@shared/upload-rule'
+import type { AppSettings, CloudConnection } from '@shared/types'
 import { getCredentialStore } from '../services/credential-store.service'
+import {
+  migrateSettingsToV3,
+  shouldPersistV3Settings
+} from '../migrations/v2-to-v3-settings'
 
 function normalizeSuffixes(suffixes: string[]): string[] {
   const normalized = suffixes
@@ -54,51 +56,36 @@ export class SettingsRepo {
   }
 
   private decodeValue(key: string, value: string): unknown {
+    let parsed: unknown
     try {
-      const parsed = JSON.parse(value) as unknown
-      if (
-        key === 'filter' &&
-        typeof parsed === 'object' &&
-        parsed !== null &&
-        'suffixes' in (parsed as Record<string, unknown>) &&
-        Array.isArray((parsed as Record<string, unknown>).suffixes)
-      ) {
-        const filter = parsed as Record<string, unknown>
-        filter.suffixes = normalizeSuffixes(filter.suffixes as string[])
-      }
-      if (
-        key === 'scan' &&
-        typeof parsed === 'object' &&
-        parsed !== null &&
-        'directories' in (parsed as Record<string, unknown>) &&
-        Array.isArray((parsed as Record<string, unknown>).directories)
-      ) {
-        const scan = parsed as Record<string, unknown>
-        scan.directories = normalizeScanDirectories(scan.directories as string[])
-        if (
-          'providerDirectories' in scan &&
-          typeof scan.providerDirectories === 'object' &&
-          scan.providerDirectories !== null
-        ) {
-          scan.providerDirectories = normalizeProviderDirectories(
-            scan.providerDirectories as Partial<ScanConfig['providerDirectories']>
-          )
-        }
-      }
-      if (
-        (key === 'oss' || key === 'tencentS3') &&
-        typeof parsed === 'object' &&
-        parsed !== null
-      ) {
-        const normalized = normalizeUploadPathConfig(
-          parsed as unknown as Record<string, unknown>
-        )
-        return getCredentialStore().decryptConfig(normalized)
-      }
-      return parsed
+      parsed = JSON.parse(value) as unknown
     } catch {
       return value
     }
+    if (
+      key === 'filter' &&
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      'suffixes' in (parsed as Record<string, unknown>) &&
+      Array.isArray((parsed as Record<string, unknown>).suffixes)
+    ) {
+      const filter = parsed as Record<string, unknown>
+      filter.suffixes = normalizeSuffixes(filter.suffixes as string[])
+    }
+    if (
+      (key === 'oss' || key === 'tencentS3') &&
+      typeof parsed === 'object' &&
+      parsed !== null
+    ) {
+      return getCredentialStore().decryptConfig(parsed as Record<string, unknown>)
+    }
+    if (key === 'connections') {
+      return normalizeCloudConnections(parsed).map((connection) => ({
+        ...connection,
+        config: getCredentialStore().decryptConfig(connection.config)
+      }))
+    }
+    return parsed
   }
 
   set(key: string, value: unknown): void {
@@ -119,35 +106,22 @@ export class SettingsRepo {
         suffixes: normalizeSuffixes(filter.suffixes as string[])
       }
     }
-    if (
-      key === 'scan' &&
-      typeof value === 'object' &&
-      value !== null &&
-      'directories' in (value as Record<string, unknown>) &&
-      Array.isArray((value as Record<string, unknown>).directories)
-    ) {
-      const scan = value as Record<string, unknown>
-      const cloud = this.get<CloudConfig>('cloud')
-      persistedValue = {
-        ...scan,
-        ...normalizeScanConfig(
-          {
-            ...(DEFAULT_SETTINGS.scan as ScanConfig),
-            ...(scan as Partial<ScanConfig>)
-          },
-          cloud?.targetMode || DEFAULT_SETTINGS.cloud.targetMode
-        )
-      }
+    if (key === 'scan' && typeof value === 'object' && value !== null) {
+      persistedValue = normalizeScanConfig(value as Partial<AppSettings['scan']>)
     }
-    if (
-      (key === 'oss' || key === 'tencentS3') &&
-      typeof value === 'object' &&
-      value !== null
-    ) {
-      const normalized = normalizeUploadPathConfig(
-        value as unknown as Record<string, unknown>
-      )
-      persistedValue = getCredentialStore().encryptConfig(normalized)
+    if (key === 'rules' && Array.isArray(value)) {
+      persistedValue = normalizeUploadRules({
+        rules: value as AppSettings['rules'],
+        activeRuleId: this.get<string>('activeRuleId') || DEFAULT_SETTINGS.activeRuleId
+      }).rules
+    }
+    if (key === 'connections' && Array.isArray(value)) {
+      const connections = normalizeCloudConnections(value)
+      this.assertConnectionDeletesAllowed(connections)
+      persistedValue = connections.map((connection) => ({
+        ...connection,
+        config: getCredentialStore().encryptConfig(connection.config)
+      }))
     }
 
     const serialized = typeof persistedValue === 'string' ? persistedValue : JSON.stringify(persistedValue)
@@ -162,83 +136,20 @@ export class SettingsRepo {
     const db = this.db()
     if (SettingsRepo.allCache) return SettingsRepo.allCache
 
-    const settings = { ...DEFAULT_SETTINGS, profiles: [] } as AppSettings
-    const settingsRecord = settings as unknown as Record<string, unknown>
-
-    const keys: Array<{ section: keyof AppSettings; key: string }> = [
-      { section: 'scan', key: 'scan' },
-      { section: 'upload', key: 'upload' },
-      { section: 'cloud', key: 'cloud' },
-      { section: 'oss', key: 'oss' },
-      { section: 'tencentS3', key: 'tencentS3' },
-      { section: 'profiles', key: 'profiles' },
-      { section: 'activeProfileId', key: 'activeProfileId' },
-      { section: 'filter', key: 'filter' },
-      { section: 'webhook', key: 'webhook' },
-      { section: 'stability', key: 'stability' },
-      { section: 'log', key: 'log' },
-      { section: 'cleanup', key: 'cleanup' }
-    ]
-
     const rows = db
       .prepare('SELECT key, value FROM settings')
       .all() as Array<{ key: string; value: string }>
-    const stored = new Map(rows.map((row) => [row.key, row.value]))
-
-    for (const { section, key } of keys) {
-      const serialized = stored.get(key)
-      const val =
-        serialized === undefined
-          ? null
-          : this.decodeValue(key, serialized)
-      if (serialized !== undefined) {
-        SettingsRepo.valueCache.set(key, val)
-      }
-      if (val !== null) {
-        const defaultSection = settingsRecord[section]
-        if (
-          typeof defaultSection === 'object' &&
-          defaultSection !== null &&
-          typeof val === 'object' &&
-          val !== null &&
-          !Array.isArray(defaultSection) &&
-          !Array.isArray(val)
-        ) {
-          ; settingsRecord[section] = {
-            ...(defaultSection as Record<string, unknown>),
-            ...(val as Record<string, unknown>)
-          }
-        } else {
-          ; settingsRecord[section] = val
-        }
-      }
+    const raw: Record<string, unknown> = {}
+    for (const row of rows) {
+      const value = this.decodeValue(row.key, row.value)
+      SettingsRepo.valueCache.set(row.key, value)
+      if (value !== null) raw[row.key] = value
     }
 
-    const hotkeySerialized = stored.get('hotkey')
-    const hotkey = hotkeySerialized === undefined
-      ? null
-      : this.decodeValue('hotkey', hotkeySerialized)
-    if (hotkeySerialized !== undefined) {
-      SettingsRepo.valueCache.set('hotkey', hotkey)
+    const settings = migrateSettingsToV3(raw)
+    if (shouldPersistV3Settings(raw)) {
+      this.persistV3Settings(settings)
     }
-    if (typeof hotkey === 'string' && hotkey) settings.hotkey = hotkey
-
-    if (settings.filter && Array.isArray(settings.filter.suffixes)) {
-      settings.filter.suffixes = normalizeSuffixes(settings.filter.suffixes)
-    }
-    settings.oss = normalizeUploadPathConfig(
-      settings.oss as unknown as Record<string, unknown>
-    ) as unknown as AppSettings['oss']
-    settings.tencentS3 = normalizeUploadPathConfig(
-      settings.tencentS3 as unknown as Record<string, unknown>
-    ) as unknown as AppSettings['tencentS3']
-    settings.scan = normalizeScanConfig(
-      settings.scan,
-      settings.cloud.targetMode
-    )
-    const normalizedProfiles = normalizeProfiles(settings)
-    settings.profiles = normalizedProfiles.profiles
-    settings.activeProfileId = normalizedProfiles.activeProfileId
 
     SettingsRepo.allCache = settings
     return settings
@@ -254,6 +165,57 @@ export class SettingsRepo {
       }
     })
     transaction()
+  }
+
+  private persistV3Settings(settings: AppSettings): void {
+    const sections: Partial<AppSettings> = {
+      schemaVersion: settings.schemaVersion,
+      rules: settings.rules,
+      activeRuleId: settings.activeRuleId,
+      connections: settings.connections,
+      scan: settings.scan,
+      upload: settings.upload,
+      filter: settings.filter,
+      webhook: settings.webhook,
+      hotkey: settings.hotkey,
+      stability: settings.stability,
+      log: settings.log,
+      cleanup: settings.cleanup
+    }
+    this.saveAll(sections)
+  }
+
+  private assertConnectionDeletesAllowed(nextConnections: CloudConnection[]): void {
+    const currentConnections = this.get<CloudConnection[]>('connections')
+    if (!currentConnections || currentConnections.length === 0) return
+
+    const nextIds = new Set(nextConnections.map((connection) => connection.id))
+    const deletedIds = currentConnections
+      .map((connection) => connection.id)
+      .filter((id) => !nextIds.has(id))
+    if (deletedIds.length === 0) return
+
+    const rules = this.get<AppSettings['rules']>('rules') || DEFAULT_SETTINGS.rules
+    for (const id of deletedIds) {
+      const referencingRule = rules.find((rule) =>
+        rule.destinations.some((destination) => destination.connectionId === id)
+      )
+      if (referencingRule) {
+        throw new Error(`连接正在被上传规则使用: ${referencingRule.name}`)
+      }
+
+      const unfinishedTask = this.db().prepare(
+        `SELECT t.folder_name
+         FROM tasks t
+         INNER JOIN task_destinations td ON td.task_id = t.id
+         WHERE td.connection_id = ?
+           AND t.status NOT IN ('completed', 'synced', 'skipped')
+         LIMIT 1`
+      ).get(id) as { folder_name: string } | undefined
+      if (unfinishedTask) {
+        throw new Error(`连接正在被未完成任务使用: ${unfinishedTask.folder_name}`)
+      }
+    }
   }
 }
 

@@ -1,6 +1,12 @@
 import { extname } from 'path'
-import type { AppSettings, OSSImageResult, OSSListResult, OSSObjectHead, OSSObjectItem } from '@shared/types'
-import { providersForProfile } from '@shared/cloud-upload'
+import type {
+  AliyunOSSConnectionConfig,
+  OSSImageResult,
+  OSSListResult,
+  OSSObjectHead,
+  OSSObjectItem
+} from '@shared/types'
+import { getRuleById } from '@shared/upload-rule'
 import { getSettingsRepo } from '../db/settings.repo'
 
 interface OSSBrowseClient {
@@ -69,21 +75,16 @@ export class OSSBrowserService {
 
   private async getClientAndBasePrefix(): Promise<{ client: OSSBrowseClient; basePrefix: string }> {
     const settings = getSettingsRepo().getAll()
-    const profile =
-      settings.profiles.find((item) => item.id === settings.activeProfileId) ||
-      settings.profiles[0]
-    if (!providersForProfile(profile).includes('aliyun')) {
-      throw new Error('OSS 浏览器当前使用阿里云 OSS 连接，请选择包含 aliyun 连接的上传规则')
+    const rule = getRuleById(settings, settings.activeRuleId)
+    const aliyunConnection = rule.destinations
+      .map((destination) =>
+        settings.connections.find((connection) => connection.id === destination.connectionId)
+      )
+      .find((connection) => connection?.type === 'aliyun-oss')
+    if (!aliyunConnection) {
+      throw new Error('OSS 浏览器当前使用阿里云 OSS 连接，请选择包含 aliyun-oss 连接的上传规则')
     }
-    const config = {
-      ...settings.oss,
-      ...profile.providers.aliyun,
-      accessKeyId: settings.oss.accessKeyId,
-      accessKeySecret: settings.oss.accessKeySecret,
-      endpoint: settings.oss.endpoint,
-      bucket: settings.oss.bucket,
-      region: settings.oss.region
-    } as AppSettings['oss']
+    const config = aliyunConnection.config as AliyunOSSConnectionConfig
 
     if (!config.region || !config.bucket || !config.accessKeyId || !config.accessKeySecret) {
       throw new Error('阿里云 OSS 配置不完整，请先到云端连接页完成配置')
@@ -108,7 +109,7 @@ export class OSSBrowserService {
     }
   }
 
-  private getConfigKey(config: AppSettings['oss']): string {
+  private getConfigKey(config: AliyunOSSConnectionConfig): string {
     return [config.endpoint, config.region, config.bucket, config.accessKeyId, config.accessKeySecret].join('|')
   }
 

@@ -14,7 +14,7 @@ import { runMigrations, setDbForTests } from '../src/main/db/database'
 import { DayFolderRepo } from '../src/main/db/day-folder.repo'
 import { TaskRepo } from '../src/main/db/task.repo'
 import { DayFolderService } from '../src/main/services/day-folder.service'
-import type { CompletionPolicy, UploadProfile } from '../src/shared/types'
+import type { CompletionPolicy, UploadRule } from '../src/shared/types'
 
 function createDatabase(): Database.Database {
   const db = new Database(':memory:')
@@ -29,24 +29,16 @@ function closeDatabase(db: Database.Database): void {
   db.close()
 }
 
-function createProfile(root: string, completion: CompletionPolicy): UploadProfile {
-  const base = DEFAULT_SETTINGS.profiles[0] as UploadProfile
+function createProfile(root: string, completion: CompletionPolicy): UploadRule {
+  const base = DEFAULT_SETTINGS.rules[0] as UploadRule
   return {
     ...base,
-    id: 'profile-1',
-    name: 'Profile 1',
+    id: 'rule-1',
+    name: 'Rule 1',
     source: {
-      root,
       roots: [root]
     },
-    completion,
-    scan: {
-      ...base.scan,
-      providerDirectories: {
-        aliyun: [root],
-        tencent: []
-      }
-    }
+    completion
   }
 }
 
@@ -76,11 +68,19 @@ function createGroupWithTask(
     folderName: 'session-1',
     dayFolderId: group.id,
     uploadRelativePath: `${groupName}/session-1`,
-    uploadTargetMode: 'aliyun',
+    legacyCloudMode: 'aliyun',
+    destinations: [
+      {
+        provider: 'aliyun',
+        connectionId: 'aliyun-prod',
+        connectionName: '阿里云 OSS',
+        uploadRelativePath: `${groupName}/session-1`
+      }
+    ],
     sourceType: 'local',
-    profileId: profile.id,
-    profileName: profile.name,
-    profileSnapshot: profile,
+    ruleId: profile.id,
+    ruleName: profile.name,
+    ruleSnapshot: profile,
     groupVariables: { batch: groupName }
   })
   if (taskStatus === 'completed') {
@@ -111,7 +111,7 @@ test('refresh and recalculation do not update upload group content activity', ()
     const frozen = '2000-01-01T00:00:00.000Z'
     setContentActivity(db, groupId, frozen)
 
-    dayFolderRepo.updateGroupMetadata(groupId, 'batch-1', { batch: 'batch-1' }, 'profile-1')
+    dayFolderRepo.updateGroupMetadata(groupId, 'batch-1', { batch: 'batch-1' }, 'rule-1')
     dayFolderRepo.updateDiscovery(groupId, ['session-1'])
     dayFolderRepo.recalculate(groupId, new Date('2026-09-13T10:00:00.000Z'))
     new DayFolderService().refresh(groupId)
@@ -145,9 +145,9 @@ test('new tasks and file content changes update upload group content activity', 
       folderName: 'session-1',
       dayFolderId: group.id,
       uploadRelativePath: 'batch-1/session-1',
-      profileId: profile.id,
-      profileName: profile.name,
-      profileSnapshot: profile
+      ruleId: profile.id,
+      ruleName: profile.name,
+      ruleSnapshot: profile
     })
     assert.notEqual(dayFolderRepo.getById(group.id)?.lastContentActivityAt, frozen)
 
@@ -181,9 +181,9 @@ test('new tasks and file content changes update upload group content activity', 
       folderName: 'session-2',
       dayFolderId: group.id,
       uploadRelativePath: 'batch-1/session-2',
-      profileId: profile.id,
-      profileName: profile.name,
-      profileSnapshot: profile
+      ruleId: profile.id,
+      ruleName: profile.name,
+      ruleSnapshot: profile
     })
     assert.notEqual(dayFolderRepo.getById(group.id)?.lastContentActivityAt, frozen)
   } finally {
@@ -204,7 +204,7 @@ test('inactivity completion uses last content activity instead of record updates
     const dayFolderRepo = new DayFolderRepo()
 
     setContentActivity(db, groupId, '2026-09-13T10:00:00.000Z')
-    dayFolderRepo.updateGroupMetadata(groupId, 'batch-1', { batch: 'batch-1' }, 'profile-1')
+    dayFolderRepo.updateGroupMetadata(groupId, 'batch-1', { batch: 'batch-1' }, 'rule-1')
     assert.equal(
       dayFolderRepo.recalculate(
         groupId,

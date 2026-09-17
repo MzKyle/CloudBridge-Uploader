@@ -2,15 +2,24 @@ import { v4 as uuid } from 'uuid'
 import type {
   CloudProvider,
   FileStatus,
+  LegacyCloudMode,
   TaskDestination,
   TaskFileDestination,
   TaskStatus,
-  UploadPathMode,
-  UploadTargetMode
+  UploadPathMode
 } from '@shared/types'
-import { providersForMode } from '@shared/cloud-upload'
 import { deriveLogicalFileStatus } from '@shared/cloud-upload'
 import { getDb } from './database'
+
+export interface TaskDestinationCreateInput {
+  provider: CloudProvider
+  connectionId: string
+  connectionName?: string | null
+  prefix?: string
+  uploadRelativePath?: string
+  pathMode?: UploadPathMode
+  objectKeyTemplate?: string | null
+}
 
 export interface FileDestinationUploadTarget extends TaskFileDestination {
   taskId: string
@@ -39,6 +48,8 @@ function rowToDestination(row: Record<string, unknown>): TaskDestination {
     id: row.id as string,
     taskId: row.task_id as string,
     provider: row.provider as CloudProvider,
+    connectionId: (row.connection_id as string) || legacyConnectionId(row.provider as CloudProvider),
+    connectionName: (row.connection_name as string) || null,
     status: row.status as TaskStatus,
     prefix: (row.prefix as string) || '',
     uploadRelativePath: (row.upload_relative_path as string | null | undefined) ?? '',
@@ -61,6 +72,7 @@ function rowToFileDestination(row: Record<string, unknown>): TaskFileDestination
     taskFileId: row.task_file_id as string,
     taskDestinationId: row.task_destination_id as string,
     provider: row.provider as CloudProvider,
+    connectionId: (row.connection_id as string) || legacyConnectionId(row.provider as CloudProvider),
     status: row.status as FileStatus,
     objectKey: (row.object_key as string) || null,
     plannedObjectKey: (row.planned_object_key as string) || null,
@@ -74,21 +86,17 @@ function rowToFileDestination(row: Record<string, unknown>): TaskFileDestination
 export class TaskDestinationRepo {
   ensureForTask(
     taskId: string,
-    mode: UploadTargetMode,
-    prefixes: Partial<Record<CloudProvider, string>>,
+    destinations: TaskDestinationCreateInput[],
     initialStatus: TaskStatus = 'pending',
-    uploadRelativePaths: Partial<Record<CloudProvider, string>> = {},
-    pathModes: Partial<Record<CloudProvider, UploadPathMode>> = {},
-    objectKeyTemplates: Partial<Record<CloudProvider, string | null>> = {}
   ): TaskDestination[] {
     const db = getDb()
     const now = new Date().toISOString()
     const stmt = db.prepare(
       `INSERT OR IGNORE INTO task_destinations (
-        id, task_id, provider, status, prefix, upload_relative_path,
+        id, task_id, provider, connection_id, connection_name, status, prefix, upload_relative_path,
         path_mode, object_key_template,
         created_at, updated_at, completed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     const completedAt =
       initialStatus === 'completed' ||
@@ -97,16 +105,18 @@ export class TaskDestinationRepo {
         ? now
         : null
     const transaction = db.transaction(() => {
-      for (const provider of providersForMode(mode)) {
+      for (const destination of destinations) {
         stmt.run(
           uuid(),
           taskId,
-          provider,
+          destination.provider,
+          destination.connectionId,
+          destination.connectionName || null,
           initialStatus,
-          prefixes[provider] || '',
-          uploadRelativePaths[provider] ?? '',
-          pathModes[provider] || 'target-root',
-          objectKeyTemplates[provider] ?? null,
+          destination.prefix || '',
+          destination.uploadRelativePath ?? '',
+          destination.pathMode || 'target-root',
+          destination.objectKeyTemplate ?? null,
           now,
           now,
           completedAt
@@ -248,9 +258,9 @@ export class TaskDestinationRepo {
     const now = new Date().toISOString()
     db.prepare(
       `INSERT OR IGNORE INTO task_file_destinations (
-        id, task_file_id, task_destination_id, provider, status, created_at, updated_at
+        id, task_file_id, task_destination_id, provider, connection_id, status, created_at, updated_at
       )
-      SELECT lower(hex(randomblob(16))), tf.id, td.id, td.provider, 'pending', ?, ?
+      SELECT lower(hex(randomblob(16))), tf.id, td.id, td.provider, td.connection_id, 'pending', ?, ?
       FROM task_files tf
       INNER JOIN task_destinations td ON td.task_id = tf.task_id
       WHERE tf.task_id = ?`
@@ -545,4 +555,15 @@ let instance: TaskDestinationRepo | null = null
 export function getTaskDestinationRepo(): TaskDestinationRepo {
   if (!instance) instance = new TaskDestinationRepo()
   return instance
+}
+
+function legacyConnectionId(provider: CloudProvider): string {
+  return provider === 'aliyun' ? 'aliyun-prod' : 's3-compatible'
+}
+
+export function legacyModeFromProviders(providers: CloudProvider[]): LegacyCloudMode {
+  const unique = new Set(providers)
+  if (unique.has('aliyun') && unique.has('tencent')) return 'both'
+  if (unique.has('tencent')) return 'tencent'
+  return 'aliyun'
 }

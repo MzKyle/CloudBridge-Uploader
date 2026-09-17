@@ -11,8 +11,7 @@ import {
 } from '../src/main/db/task-destination.repo'
 import { TaskRepo } from '../src/main/db/task.repo'
 import { TaskRunnerService } from '../src/main/services/task-runner.service'
-import type { ObjectKeyRenderContext } from '../src/shared/upload-profile'
-import type { CloudProvider, Task } from '../src/shared/types'
+import type { CloudProvider, PathMappingConfig, Task } from '../src/shared/types'
 
 function createDatabase(): Database.Database {
   const db = new Database(':memory:')
@@ -234,8 +233,23 @@ test('scanner-style reconcile does not rewrite planned object keys', () => {
     const task = taskRepo.create({
       folderPath: '/tmp/source',
       folderName: 'source',
-      uploadTargetMode: 'both',
-      destinationPrefixes: { aliyun: '', tencent: '' },
+      legacyCloudMode: 'both',
+      destinations: [
+        {
+          provider: 'aliyun',
+          connectionId: 'aliyun-prod',
+          connectionName: '阿里云 OSS',
+          prefix: '',
+          uploadRelativePath: 'source'
+        },
+        {
+          provider: 'tencent',
+          connectionId: 's3-compatible',
+          connectionName: 'S3 兼容存储',
+          prefix: '',
+          uploadRelativePath: 'source'
+        }
+      ],
       sourceType: 'manual'
     })
     const file = {
@@ -284,21 +298,25 @@ test('scanner-style reconcile does not rewrite planned object keys', () => {
 })
 
 test('object key validation reuses task-level path context', () => {
+  interface ObjectKeyBaseContext {
+    sourcePath: string
+    basePath?: string
+    variables: Record<string, string>
+    rulePathMapping?: PathMappingConfig
+  }
   interface TaskRunnerInternals {
-    findProfileBasePath: (task: Task) => string | undefined
-    buildObjectKeyBaseContext: (
-      task: Task
-    ) => Omit<ObjectKeyRenderContext, 'relativePath'>
+    findRuleBasePath: (task: Task) => string | undefined
+    buildObjectKeyBaseContext: (task: Task) => ObjectKeyBaseContext
     assertNoDuplicateObjectKeys: (
       destinationByProvider: Map<CloudProvider, Task['destinations'][number]>,
       jobs: FileDestinationUploadTarget[],
-      objectKeyBaseContext: Omit<ObjectKeyRenderContext, 'relativePath'>
+      objectKeyBaseContext: ObjectKeyBaseContext
     ) => void
   }
 
   const service = new TaskRunnerService() as unknown as TaskRunnerInternals
   let basePathLookups = 0
-  service.findProfileBasePath = () => {
+  service.findRuleBasePath = () => {
     basePathLookups++
     return '/data/root'
   }
@@ -312,16 +330,47 @@ test('object key validation reuses task-level path context', () => {
     totalBytes: 0,
     uploadedBytes: 0,
     ossPrefix: '',
-    uploadTargetMode: 'aliyun',
+    legacyCloudMode: 'aliyun',
     destinations: [],
     dayFolderId: 'day-1',
     uploadRelativePath: '2026-06-30/work-1',
     errorMessage: null,
     sourceType: 'local',
     sourceMachineId: null,
-    profileId: 'profile-1',
-    profileName: 'Profile 1',
-    profileSnapshot: null,
+    ruleId: 'rule-1',
+    ruleName: 'Rule 1',
+    ruleSnapshot: {
+      id: 'rule-1',
+      name: 'Rule 1',
+      enabled: true,
+      source: {
+        roots: ['/data/root']
+      },
+      destinations: [
+        {
+          connectionId: 'aliyun-prod'
+        }
+      ],
+      pathMapping: {
+        mode: 'keep-relative'
+      },
+      discovery: {},
+      completion: {
+        mode: 'rollover'
+      },
+      cleanup: {
+        enabled: false,
+        retentionDays: 7,
+        onlyAfterSealed: true
+      },
+      filter: {
+        whitelist: [],
+        blacklist: [],
+        regex: [],
+        suffixes: []
+      }
+    },
+    groupVariables: {},
     createdAt: '2026-06-30T00:00:00.000Z',
     updatedAt: '2026-06-30T00:00:00.000Z',
     completedAt: null
@@ -330,6 +379,8 @@ test('object key validation reuses task-level path context', () => {
     id: 'destination-1',
     taskId: task.id,
     provider: 'aliyun',
+    connectionId: 'aliyun-prod',
+    connectionName: '阿里云 OSS',
     status: 'pending',
     prefix: 'upload',
     uploadRelativePath: '',

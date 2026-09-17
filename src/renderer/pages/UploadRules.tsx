@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/ui/page-header";
 import { showToast } from "@/components/ui/toast";
 import { dryRunUploadRule, fetchSettings, saveSettings, selectFolder } from "@/lib/ipc-client";
-import type { AppSettings, CompletionPolicy, UploadProfile } from "@shared/types";
+import type { AppSettings, CompletionPolicy, UploadRule } from "@shared/types";
 
 const completionModes: CompletionPolicy["mode"][] = [
   "rollover",
@@ -22,7 +22,7 @@ export default function UploadRules() {
   const [selectedId, setSelectedId] = useState("");
   const [dryRunText, setDryRunText] = useState("");
   const selected = useMemo(
-    () => settings?.profiles.find((profile) => profile.id === selectedId) || settings?.profiles[0],
+    () => settings?.rules.find((rule) => rule.id === selectedId) || settings?.rules[0],
     [settings, selectedId],
   );
 
@@ -30,17 +30,17 @@ export default function UploadRules() {
     fetchSettings()
       .then((value) => {
         setSettings(value);
-        setSelectedId(value.activeProfileId);
+        setSelectedId(value.activeRuleId);
       })
       .catch((error) => showToast(error instanceof Error ? error.message : String(error), "error"));
   }, []);
 
-  const updateProfile = useCallback((profile: UploadProfile) => {
+  const updateRule = useCallback((rule: UploadRule) => {
     setSettings((current) => {
       if (!current) return current;
       return {
         ...current,
-        profiles: current.profiles.map((item) => item.id === profile.id ? profile : item),
+        rules: current.rules.map((item) => item.id === rule.id ? rule : item),
       };
     });
   }, []);
@@ -49,8 +49,8 @@ export default function UploadRules() {
     if (!settings) return;
     try {
       await saveSettings({
-        profiles: settings.profiles,
-        activeProfileId: selected?.id || settings.activeProfileId,
+        rules: settings.rules,
+        activeRuleId: selected?.id || settings.activeRuleId,
       });
       showToast("上传规则已保存", "success");
     } catch (error) {
@@ -60,9 +60,9 @@ export default function UploadRules() {
 
   const addRule = useCallback(() => {
     const id = `rule-${Date.now()}`;
-    const base = settings?.profiles[0];
+    const base = settings?.rules[0];
     if (!settings || !base) return;
-    const next: UploadProfile = {
+    const next: UploadRule = {
       ...base,
       id,
       name: "新上传规则",
@@ -73,21 +73,21 @@ export default function UploadRules() {
     };
     setSettings({
       ...settings,
-      profiles: [...settings.profiles, next],
-      activeProfileId: id,
+      rules: [...settings.rules, next],
+      activeRuleId: id,
     });
     setSelectedId(id);
   }, [settings]);
 
   const deleteRule = useCallback(() => {
-    if (!settings || !selected || settings.profiles.length <= 1) return;
-    const profiles = settings.profiles.filter((profile) => profile.id !== selected.id);
+    if (!settings || !selected || settings.rules.length <= 1) return;
+    const rules = settings.rules.filter((rule) => rule.id !== selected.id);
     setSettings({
       ...settings,
-      profiles,
-      activeProfileId: profiles[0].id,
+      rules,
+      activeRuleId: rules[0].id,
     });
-    setSelectedId(profiles[0].id);
+    setSelectedId(rules[0].id);
   }, [settings, selected]);
 
   const runDryRun = useCallback(async () => {
@@ -99,7 +99,7 @@ export default function UploadRules() {
     }
     try {
       const result = await dryRunUploadRule({
-        profileId: selected.id,
+        ruleId: selected.id,
         rule: selected,
         sourceRoot: root,
         sampleLimit: 50,
@@ -140,16 +140,16 @@ export default function UploadRules() {
       <div className="grid gap-5 lg:grid-cols-[240px_1fr]">
         <Card>
           <CardContent className="p-3 space-y-2">
-            {settings.profiles.map((profile) => (
+            {settings.rules.map((rule) => (
               <button
-                key={profile.id}
+                key={rule.id}
                 className={`w-full rounded-md px-3 py-2 text-left text-sm ${
-                  profile.id === selected.id ? "bg-primary text-primary-foreground" : "hover:bg-muted"
+                  rule.id === selected.id ? "bg-primary text-primary-foreground" : "hover:bg-muted"
                 }`}
-                onClick={() => setSelectedId(profile.id)}
+                onClick={() => setSelectedId(rule.id)}
               >
-                <div className="font-medium">{profile.name}</div>
-                <div className="text-xs opacity-80">{profile.enabled ? "启用" : "停用"}</div>
+                <div className="font-medium">{rule.name}</div>
+                <div className="text-xs opacity-80">{rule.enabled ? "启用" : "停用"}</div>
               </button>
             ))}
           </CardContent>
@@ -164,13 +164,13 @@ export default function UploadRules() {
               <TextField
                 label="名称"
                 value={selected.name}
-                onChange={(name) => updateProfile({ ...selected, name })}
+                onChange={(name) => updateRule({ ...selected, name })}
               />
               <label className="flex items-end gap-2 pb-2 text-sm">
                 <input
                   type="checkbox"
                   checked={selected.enabled}
-                  onChange={(event) => updateProfile({ ...selected, enabled: event.target.checked })}
+                  onChange={(event) => updateRule({ ...selected, enabled: event.target.checked })}
                 />
                 启用规则
               </label>
@@ -180,7 +180,7 @@ export default function UploadRules() {
                 multiline
                 onChange={(value) => {
                   const roots = value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
-                  updateProfile({ ...selected, source: { roots } });
+                  updateRule({ ...selected, source: { roots } });
                 }}
               />
               <div className="flex items-end">
@@ -190,7 +190,7 @@ export default function UploadRules() {
                     const folder = await selectFolder();
                     if (!folder) return;
                     const roots = Array.from(new Set([...selected.source.roots, folder]));
-                    updateProfile({ ...selected, source: { roots } });
+                    updateRule({ ...selected, source: { roots } });
                   }}
                 >
                   添加目录
@@ -208,7 +208,7 @@ export default function UploadRules() {
                 label="Group Pattern"
                 value={selected.discovery.groupPattern || ""}
                 placeholder="{machine}/{date:yyyyMMdd}"
-                onChange={(groupPattern) => updateProfile({
+                onChange={(groupPattern) => updateRule({
                   ...selected,
                   discovery: { ...selected.discovery, groupPattern },
                 })}
@@ -217,7 +217,7 @@ export default function UploadRules() {
                 label="Task Pattern"
                 value={selected.discovery.taskPattern || ""}
                 placeholder="{session:HH-mm-ss}"
-                onChange={(taskPattern) => updateProfile({
+                onChange={(taskPattern) => updateRule({
                   ...selected,
                   discovery: { ...selected.discovery, taskPattern },
                 })}
@@ -225,7 +225,7 @@ export default function UploadRules() {
               <TextField
                 label="Group Regex"
                 value={selected.discovery.groupRegex || ""}
-                onChange={(groupRegex) => updateProfile({
+                onChange={(groupRegex) => updateRule({
                   ...selected,
                   discovery: { ...selected.discovery, groupRegex },
                 })}
@@ -233,23 +233,34 @@ export default function UploadRules() {
               <TextField
                 label="Task Regex"
                 value={selected.discovery.taskRegex || ""}
-                onChange={(taskRegex) => updateProfile({
+                onChange={(taskRegex) => updateRule({
                   ...selected,
                   discovery: { ...selected.discovery, taskRegex },
                 })}
               />
-              <TextField
-                label="Destination Connection IDs"
-                value={selected.destinations.map((item) => item.connectionId).join("\n")}
-                multiline
-                onChange={(value) => {
-                  const destinations = value.split(/\r?\n/)
-                    .map((connectionId) => connectionId.trim())
-                    .filter(Boolean)
-                    .map((connectionId) => ({ connectionId, required: true }));
-                  updateProfile({ ...selected, destinations });
-                }}
-              />
+              <div className="space-y-2">
+                <Label>Destinations</Label>
+                <div className="rounded-md border p-2">
+                  {settings.connections.map((connection) => {
+                    const checked = selected.destinations.some((item) => item.connectionId === connection.id);
+                    return (
+                      <label key={connection.id} className="flex items-center gap-2 py-1 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(event) => {
+                            const destinations = event.target.checked
+                              ? [...selected.destinations, { connectionId: connection.id }]
+                              : selected.destinations.filter((item) => item.connectionId !== connection.id);
+                            updateRule({ ...selected, destinations });
+                          }}
+                        />
+                        {connection.name} <span className="text-xs text-muted-foreground">({connection.id})</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
             </CardContent>
           </Card>
 
@@ -263,9 +274,9 @@ export default function UploadRules() {
                 <select
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm"
                   value={selected.pathMapping.mode}
-                  onChange={(event) => updateProfile({
+                  onChange={(event) => updateRule({
                     ...selected,
-                    pathMapping: { mode: event.target.value as UploadProfile["pathMapping"]["mode"] },
+                    pathMapping: { mode: event.target.value as UploadRule["pathMapping"]["mode"] },
                   })}
                 >
                   <option value="keep-relative">keep-relative</option>
@@ -277,7 +288,7 @@ export default function UploadRules() {
                 label="Template"
                 value={selected.pathMapping.template || ""}
                 placeholder="archive/{machine}/{date}/{relativePath}"
-                onChange={(template) => updateProfile({
+                onChange={(template) => updateRule({
                   ...selected,
                   pathMapping: { ...selected.pathMapping, template },
                 })}
@@ -287,7 +298,7 @@ export default function UploadRules() {
                 <select
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm"
                   value={selected.completion.mode}
-                  onChange={(event) => updateProfile({
+                  onChange={(event) => updateRule({
                     ...selected,
                     completion: completionFor(event.target.value as CompletionPolicy["mode"]),
                   })}
@@ -300,7 +311,7 @@ export default function UploadRules() {
               <NumberField
                 label="Cleanup Retention Days"
                 value={selected.cleanup.retentionDays}
-                onChange={(retentionDays) => updateProfile({
+                onChange={(retentionDays) => updateRule({
                   ...selected,
                   cleanup: { ...selected.cleanup, retentionDays },
                 })}
@@ -309,7 +320,7 @@ export default function UploadRules() {
                 <input
                   type="checkbox"
                   checked={selected.cleanup.enabled}
-                  onChange={(event) => updateProfile({
+                  onChange={(event) => updateRule({
                     ...selected,
                     cleanup: { ...selected.cleanup, enabled: event.target.checked },
                   })}
@@ -336,7 +347,7 @@ export default function UploadRules() {
               <Button
                 variant="destructive"
                 onClick={deleteRule}
-                disabled={settings.profiles.length <= 1}
+                disabled={settings.rules.length <= 1}
               >
                 <Trash2 className="mr-2 h-4 w-4" />
                 删除规则

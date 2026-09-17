@@ -178,9 +178,9 @@ export function TaskDetailDrawer({
               <span className="text-xs text-muted-foreground">
                 {CLOUD_PROVIDER_LABELS[provider]}
               </span>
-              {task.profileName && (
+              {task.ruleName && (
                 <span className="text-xs text-muted-foreground">
-                  Profile: {task.profileName}
+                  Rule: {task.ruleName}
                 </span>
               )}
             </div>

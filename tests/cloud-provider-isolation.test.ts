@@ -1,17 +1,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import Database from 'better-sqlite3'
-import {
-  getActiveScanRoots,
-  normalizeScanConfig
-} from '../src/shared/scan-config'
+import { getActiveRuleScanRoots } from '../src/shared/scan-config'
+import { migrateSettingsToV3 } from '../src/main/migrations/v2-to-v3-settings'
 import { runMigrations, setDbForTests } from '../src/main/db/database'
 import { getDayFolderRepo } from '../src/main/db/day-folder.repo'
 import { getHistoryRepo } from '../src/main/db/history.repo'
-import { getTaskDestinationRepo } from '../src/main/db/task-destination.repo'
+import {
+  getTaskDestinationRepo,
+  type TaskDestinationCreateInput
+} from '../src/main/db/task-destination.repo'
 import { getTaskRepo } from '../src/main/db/task.repo'
 import { ScannerService } from '../src/main/services/scanner.service'
-import type { CloudProvider, Task, UploadTargetMode } from '../src/shared/types'
+import type { Task } from '../src/shared/types'
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:')
@@ -26,50 +27,80 @@ function closeTestDb(db: Database.Database): void {
   db.close()
 }
 
-test('migrates legacy scan directories according to target mode', () => {
-  const scan = normalizeScanConfig(
-    {
-      directories: ['/data/2026-06-27', '/extra'],
+function cloudDestinations(
+  uploadRelativePath: string,
+  prefixes: Partial<Record<'aliyun' | 'tencent', string>>
+): TaskDestinationCreateInput[] {
+  const destinations: TaskDestinationCreateInput[] = []
+  if (prefixes.aliyun !== undefined) {
+    destinations.push({
+      provider: 'aliyun',
+      connectionId: 'aliyun-prod',
+      connectionName: '阿里云 OSS',
+      prefix: prefixes.aliyun,
+      uploadRelativePath
+    })
+  }
+  if (prefixes.tencent !== undefined) {
+    destinations.push({
+      provider: 'tencent',
+      connectionId: 's3-compatible',
+      connectionName: 'S3 兼容存储',
+      prefix: prefixes.tencent,
+      uploadRelativePath
+    })
+  }
+  return destinations
+}
+
+test('migrates legacy provider directories into V3 rule source roots', () => {
+  const settings = migrateSettingsToV3({
+    cloud: { targetMode: 'both' },
+    scan: {
+      directories: ['/data', '/extra'],
       providerDirectories: { aliyun: [], tencent: [] },
       intervalSeconds: 30
     },
-    'both'
-  )
+    profiles: []
+  })
 
-  assert.deepEqual(scan.providerDirectories.aliyun, ['/data', '/extra'])
-  assert.deepEqual(scan.providerDirectories.tencent, ['/data', '/extra'])
-  assert.deepEqual(scan.directories, ['/data', '/extra'])
+  assert.equal(settings.schemaVersion, 3)
+  assert.deepEqual(settings.rules[0].source.roots, ['/data', '/extra'])
+  assert.deepEqual(
+    settings.rules[0].destinations.map((destination) => destination.connectionId),
+    ['aliyun-prod', 's3-compatible']
+  )
 })
 
-test('builds active scan roots by target mode and merges duplicate provider directories', () => {
-  const scan = normalizeScanConfig(
-    {
-      directories: [],
-      providerDirectories: {
-        aliyun: ['/data/a', '/data/shared'],
-        tencent: ['/data/shared', '/data/t']
-      },
-      intervalSeconds: 30
-    },
-    'both'
-  )
+test('splits legacy profiles when provider roots diverge', () => {
+  const settings = migrateSettingsToV3({
+    profiles: [
+      {
+        id: 'capture',
+        name: 'Capture',
+        enabled: true,
+        targetMode: 'both',
+        scan: {
+          providerDirectories: {
+            aliyun: ['/data/a'],
+            tencent: ['/data/t']
+          }
+        }
+      }
+    ]
+  })
 
-  assert.deepEqual(getActiveScanRoots(scan, 'aliyun'), [
-    { directory: '/data/a', providers: ['aliyun'] },
-    { directory: '/data/shared', providers: ['aliyun'] }
+  assert.deepEqual(settings.rules.map((rule) => rule.id), [
+    'capture-aliyun',
+    'capture-s3'
   ])
-  assert.deepEqual(getActiveScanRoots(scan, 'tencent'), [
-    { directory: '/data/shared', providers: ['tencent'] },
-    { directory: '/data/t', providers: ['tencent'] }
-  ])
-  assert.deepEqual(getActiveScanRoots(scan, 'both'), [
-    { directory: '/data/a', providers: ['aliyun'] },
-    { directory: '/data/shared', providers: ['aliyun', 'tencent'] },
-    { directory: '/data/t', providers: ['tencent'] }
+  assert.deepEqual(getActiveRuleScanRoots(settings.rules), [
+    { directory: '/data/a', ruleId: 'capture-aliyun', ruleName: 'Capture / Aliyun' },
+    { directory: '/data/t', ruleId: 'capture-s3', ruleName: 'Capture / S3' }
   ])
 })
 
-test('scanner task registration creates provider-specific destinations', () => {
+test('scanner task registration snapshots connection destinations', () => {
   const db = createTestDb()
   try {
     const dayFolder = getDayFolderRepo().ensure('/data/2026-06-27', '2026-06-27')
@@ -80,62 +111,50 @@ test('scanner task registration creates provider-specific destinations', () => {
         dayFolderId: string,
         uploadRelativePath: string,
         targetSnapshot: {
-          mode: UploadTargetMode
-          prefixes: Record<CloudProvider, string>
-          uploadRelativePaths: Partial<Record<CloudProvider, string>>
-          uploadRelativePath: string
+          legacyCloudMode: 'both'
+          ruleId: string
+          ruleName: string
+          ruleSnapshot: Task['ruleSnapshot']
+          destinations: Array<{
+            connectionId: string
+            connectionName: string
+            connectionType: 'aliyun-oss' | 's3'
+            legacyProvider: 'aliyun' | 'tencent'
+            prefix: string
+          }>
         }
       ) => Task
     }
 
-    const aliyunTask = scanner.ensureTaskRegistered(
-      '/data/2026-06-27/a',
-      'a',
-      dayFolder.id,
-      '2026-06-27/a',
-      {
-        mode: 'aliyun',
-        prefixes: { aliyun: 'ali/', tencent: 'ten/' },
-        uploadRelativePaths: { aliyun: '' },
-        uploadRelativePath: ''
-      }
-    )
-    const tencentTask = scanner.ensureTaskRegistered(
-      '/data/2026-06-27/t',
-      't',
-      dayFolder.id,
-      '2026-06-27/t',
-      {
-        mode: 'tencent',
-        prefixes: { aliyun: 'ali/', tencent: 'ten/' },
-        uploadRelativePaths: { tencent: 'custom/tencent' },
-        uploadRelativePath: 'custom/tencent'
-      }
-    )
     const bothTask = scanner.ensureTaskRegistered(
       '/data/2026-06-27/both',
       'both',
       dayFolder.id,
       '2026-06-27/both',
       {
-        mode: 'both',
-        prefixes: { aliyun: 'ali/', tencent: 'ten/' },
-        uploadRelativePaths: {
-          aliyun: 'ali/path',
-          tencent: 'tencent/path'
-        },
-        uploadRelativePath: 'ali/path'
+        legacyCloudMode: 'both',
+        ruleId: 'rule-1',
+        ruleName: 'Rule 1',
+        ruleSnapshot: null,
+        destinations: [
+          {
+            connectionId: 'aliyun-prod',
+            connectionName: 'Aliyun',
+            connectionType: 'aliyun-oss',
+            legacyProvider: 'aliyun',
+            prefix: 'ali/'
+          },
+          {
+            connectionId: 's3-compatible',
+            connectionName: 'S3',
+            connectionType: 's3',
+            legacyProvider: 'tencent',
+            prefix: 'ten/'
+          }
+        ]
       }
     )
 
-    assert.deepEqual(
-      getTaskDestinationRepo().listByTask(aliyunTask.id).map((item) => item.provider),
-      ['aliyun']
-    )
-    assert.deepEqual(
-      getTaskDestinationRepo().listByTask(tencentTask.id).map((item) => item.provider),
-      ['tencent']
-    )
     assert.deepEqual(
       getTaskDestinationRepo().listByTask(bothTask.id).map((item) => item.provider),
       ['aliyun', 'tencent']
@@ -143,11 +162,12 @@ test('scanner task registration creates provider-specific destinations', () => {
     assert.deepEqual(
       getTaskDestinationRepo().listByTask(bothTask.id).map((item) => ({
         provider: item.provider,
+        connectionId: item.connectionId,
         uploadRelativePath: item.uploadRelativePath
       })),
       [
-        { provider: 'aliyun', uploadRelativePath: 'ali/path' },
-        { provider: 'tencent', uploadRelativePath: 'tencent/path' }
+        { provider: 'aliyun', connectionId: 'aliyun-prod', uploadRelativePath: '2026-06-27/both' },
+        { provider: 'tencent', connectionId: 's3-compatible', uploadRelativePath: '2026-06-27/both' }
       ]
     )
   } finally {
@@ -162,8 +182,8 @@ test('history delete and clear are scoped to the selected provider', () => {
       folderPath: '/data/both',
       folderName: 'both',
       ossPrefix: 'ali/',
-      uploadTargetMode: 'both',
-      destinationPrefixes: { aliyun: 'ali/', tencent: 'ten/' },
+      legacyCloudMode: 'both',
+      destinations: cloudDestinations('both', { aliyun: 'ali/', tencent: 'ten/' }),
       uploadRelativePath: 'both',
       sourceType: 'manual'
     })
@@ -187,8 +207,8 @@ test('history delete and clear are scoped to the selected provider', () => {
       folderPath: '/data/aliyun-only',
       folderName: 'aliyun-only',
       ossPrefix: 'ali/',
-      uploadTargetMode: 'aliyun',
-      destinationPrefixes: { aliyun: 'ali/' },
+      legacyCloudMode: 'aliyun',
+      destinations: cloudDestinations('aliyun-only', { aliyun: 'ali/' }),
       uploadRelativePath: 'aliyun-only',
       sourceType: 'manual'
     })
@@ -196,8 +216,8 @@ test('history delete and clear are scoped to the selected provider', () => {
       folderPath: '/data/tencent-only',
       folderName: 'tencent-only',
       ossPrefix: '',
-      uploadTargetMode: 'tencent',
-      destinationPrefixes: { tencent: 'ten/' },
+      legacyCloudMode: 'tencent',
+      destinations: cloudDestinations('tencent-only', { tencent: 'ten/' }),
       uploadRelativePath: 'tencent-only',
       sourceType: 'manual'
     })
@@ -220,8 +240,8 @@ test('day folder summaries can be filtered and deleted by provider', () => {
       folderPath: '/data/2026-06-27/both',
       folderName: 'both',
       ossPrefix: 'ali/',
-      uploadTargetMode: 'both',
-      destinationPrefixes: { aliyun: 'ali/', tencent: 'ten/' },
+      legacyCloudMode: 'both',
+      destinations: cloudDestinations('2026-06-27/both', { aliyun: 'ali/', tencent: 'ten/' }),
       dayFolderId: dayFolder.id,
       uploadRelativePath: '2026-06-27/both',
       sourceType: 'local'

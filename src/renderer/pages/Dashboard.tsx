@@ -24,7 +24,7 @@ import { useTaskStore } from "@/stores/task.store";
 import { useTaskProgress } from "@/hooks/useTaskProgress";
 import { showToast } from "@/components/ui/toast";
 import { buildPathTree } from "@/lib/path-tree";
-import { providersForProfile } from "@shared/cloud-upload";
+import { legacyProviderForConnection } from "@shared/cloud-upload";
 import {
   selectFolder,
   addFolder as addFolderApi,
@@ -49,9 +49,9 @@ import type {
   CloudProvider,
   DayFolderSummary,
   Task,
+  UploadPathPreview,
   UploadQueueStatus,
 } from "@shared/types";
-import type { UploadPathPreview } from "@shared/upload-profile";
 import { progressKey } from "@shared/cloud-upload";
 
 type DashboardTreeItem =
@@ -65,7 +65,7 @@ type ConfirmAction =
   | { kind: "close-upload-group"; id: string }
   | { kind: "skip-task"; id: string };
 
-interface DashboardProfileOption {
+interface DashboardRuleOption {
   id: string;
   name: string;
   enabled: boolean;
@@ -79,9 +79,9 @@ export default function Dashboard() {
   const [dayFolders, setDayFolders] = useState<DayFolderSummary[]>([]);
   const [provider, setProvider] = useState<CloudProvider>("aliyun");
   const [providerReady, setProviderReady] = useState(false);
-  const [profiles, setProfiles] = useState<DashboardProfileOption[]>([]);
+  const [rules, setRules] = useState<DashboardRuleOption[]>([]);
   const [pendingFolder, setPendingFolder] = useState<string | null>(null);
-  const [selectedProfileId, setSelectedProfileId] = useState("");
+  const [selectedRuleId, setSelectedRuleId] = useState("");
   const [pathPreview, setPathPreview] = useState<UploadPathPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(
@@ -102,18 +102,23 @@ export default function Dashboard() {
   useEffect(() => {
     fetchSettings()
       .then((settings) => {
-        const activeProfile =
-          settings.profiles.find((profile) => profile.id === settings.activeProfileId) ||
-          settings.profiles[0];
-        const providers = activeProfile ? providersForProfile(activeProfile) : [];
+        const activeRule =
+          settings.rules.find((rule) => rule.id === settings.activeRuleId) ||
+          settings.rules[0];
+        const providers = activeRule
+          ? activeRule.destinations
+            .map((destination) => settings.connections.find((connection) => connection.id === destination.connectionId))
+            .filter(Boolean)
+            .map((connection) => legacyProviderForConnection(connection!))
+          : [];
         setProvider(providers.includes("tencent") && !providers.includes("aliyun") ? "tencent" : "aliyun");
-        setProfiles(settings.profiles.map((profile) => ({
-          id: profile.id,
-          name: profile.name,
-          enabled: profile.enabled,
-          completionMode: profile.completion.mode,
+        setRules(settings.rules.map((rule) => ({
+          id: rule.id,
+          name: rule.name,
+          enabled: rule.enabled,
+          completionMode: rule.completion.mode,
         })));
-        setSelectedProfileId(settings.activeProfileId);
+        setSelectedRuleId(settings.activeRuleId);
       })
       .catch(() => {})
       .finally(() => setProviderReady(true));
@@ -156,28 +161,28 @@ export default function Dashboard() {
     const folder = await selectFolder();
     if (folder) {
       const settings = await fetchSettings();
-      const nextProfiles = settings.profiles.map((profile) => ({
-        id: profile.id,
-        name: profile.name,
-        enabled: profile.enabled,
-        completionMode: profile.completion.mode,
+      const nextRules = settings.rules.map((rule) => ({
+        id: rule.id,
+        name: rule.name,
+        enabled: rule.enabled,
+        completionMode: rule.completion.mode,
       }));
-      const enabledProfile =
-        nextProfiles.find((profile) => profile.id === settings.activeProfileId && profile.enabled) ??
-        nextProfiles.find((profile) => profile.enabled);
-      setProfiles(nextProfiles);
-      setSelectedProfileId(enabledProfile?.id ?? "");
+      const enabledRule =
+        nextRules.find((rule) => rule.id === settings.activeRuleId && rule.enabled) ??
+        nextRules.find((rule) => rule.enabled);
+      setRules(nextRules);
+      setSelectedRuleId(enabledRule?.id ?? "");
       setPendingFolder(folder);
     }
   }, []);
 
   useEffect(() => {
-    if (!pendingFolder || !selectedProfileId) return;
+    if (!pendingFolder || !selectedRuleId) return;
     setPreviewLoading(true);
     setPathPreviewError(null);
     previewUploadPath({
       sourcePath: pendingFolder,
-      profileId: selectedProfileId,
+      ruleId: selectedRuleId,
     })
       .then(setPathPreview)
       .catch((err) => {
@@ -187,15 +192,15 @@ export default function Dashboard() {
         showToast(`路径预览失败: ${message}`, "error");
       })
       .finally(() => setPreviewLoading(false));
-  }, [pendingFolder, selectedProfileId]);
+  }, [pendingFolder, selectedRuleId]);
 
   const handleConfirmAddFolder = useCallback(async () => {
     if (!pendingFolder) return;
-    await addFolderApi(pendingFolder, selectedProfileId);
+    await addFolderApi(pendingFolder, selectedRuleId);
     setPendingFolder(null);
     setPathPreview(null);
     loadTasks();
-  }, [loadTasks, pendingFolder, selectedProfileId]);
+  }, [loadTasks, pendingFolder, selectedRuleId]);
 
   const handleScan = useCallback(async () => {
     await triggerScan();
@@ -421,13 +426,13 @@ export default function Dashboard() {
   const selectedTaskCount = selectedTaskIds.size;
   const selectedDayFolderCount = selectedDayFolderIds.size;
   const selectedCount = selectedTaskCount + selectedDayFolderCount;
-  const enabledProfiles = useMemo(
-    () => profiles.filter((profile) => profile.enabled),
-    [profiles],
+  const enabledRules = useMemo(
+    () => rules.filter((rule) => rule.enabled),
+    [rules],
   );
-  const profileCompletionModeById = useMemo(
-    () => new Map(profiles.map((profile) => [profile.id, profile.completionMode])),
-    [profiles],
+  const ruleCompletionModeById = useMemo(
+    () => new Map(rules.map((rule) => [rule.id, rule.completionMode])),
+    [rules],
   );
   const detailTask = useMemo(
     () => providerTasks.find((task) => task.id === detailTaskId) ?? null,
@@ -548,8 +553,8 @@ export default function Dashboard() {
   }, [confirmAction]);
   const canCreatePendingTask =
     Boolean(pendingFolder) &&
-    enabledProfiles.length > 0 &&
-    Boolean(selectedProfileId) &&
+    enabledRules.length > 0 &&
+    Boolean(selectedRuleId) &&
     Boolean(pathPreview) &&
     !previewLoading &&
     !pathPreviewError;
@@ -708,7 +713,7 @@ export default function Dashboard() {
                             onClose={handleCloseUploadGroup}
                             canCloseManually={
                               dayFolder.uploadGroupStatus === "open" &&
-                              profileCompletionModeById.get(dayFolder.profileId || "") === "manual"
+                              ruleCompletionModeById.get(dayFolder.ruleId || "") === "manual"
                             }
                           />
                         {childTasks.length === 0 && (
@@ -807,22 +812,22 @@ export default function Dashboard() {
             </div>
 
             <div className="mt-4">
-              <label className="text-sm font-medium">项目 Profile</label>
-              {enabledProfiles.length === 0 ? (
+              <label className="text-sm font-medium">上传规则</label>
+              {enabledRules.length === 0 ? (
                 <EmptyState
-                  title="没有可用 Profile"
-                  description="请先在设置中启用至少一个项目 Profile，再创建上传任务。"
+                  title="没有可用规则"
+                  description="请先启用至少一个上传规则，再创建上传任务。"
                   className="mt-2 py-8"
                 />
               ) : (
                 <select
-                  value={selectedProfileId}
-                  onChange={(event) => setSelectedProfileId(event.target.value)}
+                  value={selectedRuleId}
+                  onChange={(event) => setSelectedRuleId(event.target.value)}
                   className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 >
-                  {enabledProfiles.map((profile) => (
-                    <option key={profile.id} value={profile.id}>
-                      {profile.name}
+                  {enabledRules.map((rule) => (
+                    <option key={rule.id} value={rule.id}>
+                      {rule.name}
                     </option>
                   ))}
                 </select>
@@ -841,19 +846,19 @@ export default function Dashboard() {
               )}
               {!previewLoading &&
                 !pathPreviewError &&
-                enabledProfiles.length > 0 &&
+                enabledRules.length > 0 &&
                 !pathPreview && (
                   <div className="mt-2 text-xs text-muted-foreground">
-                    选择 Profile 后会显示上传对象 Key 预览。
+                    选择规则后会显示上传对象 Key 预览。
                   </div>
                 )}
               {!previewLoading && pathPreview && (
                 <div className="mt-3 space-y-3">
-                  {pathPreview.providers.map((item) => (
-                    <div key={item.provider} className="rounded-md border bg-background p-3">
+                  {pathPreview.destinations.map((item) => (
+                    <div key={item.connectionId} className="rounded-md border bg-background p-3">
                       <div className="flex items-center justify-between text-sm">
-                        <span>{item.provider === "aliyun" ? "阿里云" : "腾讯云"}</span>
-                        <span className="text-xs text-muted-foreground">{item.pathMode}</span>
+                        <span>{item.connectionId}</span>
+                        <span className="text-xs text-muted-foreground">{item.prefix || "no prefix"}</span>
                       </div>
                       <div className="mt-2 space-y-1">
                         {item.keys.slice(0, 5).map((key) => (

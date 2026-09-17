@@ -10,20 +10,14 @@ import {
   uploadGroupSiblingStreamKey
 } from '@shared/upload-group'
 import {
-  getUploadTargetSnapshot,
-  providersForMode,
-  type UploadTargetSnapshot
-} from '@shared/cloud-upload'
-import type { UploadPathResolveContext } from '@shared/upload-path'
-import {
-  getActiveProfileScanRoots,
-  getProfileWatchedDirectoriesByProvider,
-  type ActiveProfileScanRoot
+  getActiveRuleScanRoots,
+  type ActiveRuleScanRoot
 } from '@shared/scan-config'
 import {
-  getProfileById,
-  resolveProfileUploadSnapshot
-} from '@shared/upload-profile'
+  getRuleById,
+  resolveRuleUploadSnapshot,
+  type RuleUploadSnapshot
+} from '@shared/upload-rule'
 import { getTaskRepo } from '../db/task.repo'
 import { getDayFolderRepo } from '../db/day-folder.repo'
 import { getSettingsRepo } from '../db/settings.repo'
@@ -38,12 +32,10 @@ import type {
   StabilityConfig,
   ScannerStatus,
   Task,
-  UploadTargetMode,
-  CloudProvider,
-  AppSettings,
-  UploadPathMode,
+  UploadRule,
   PathVariables
 } from '@shared/types'
+import type { TaskDestinationCreateInput } from '../db/task-destination.repo'
 
 interface PendingDir {
   path: string
@@ -55,14 +47,7 @@ interface PendingDir {
   checks: number
   discoveredAt: string
   lastSnapshot: Map<string, { size: number; mtimeMs: number }>
-  uploadTargetMode?: UploadTargetMode
-  profileId?: string
-  profileName?: string
-  profileSnapshot?: AppSettings['profiles'][number]
-  destinationPrefixes?: Partial<Record<CloudProvider, string>>
-  destinationUploadRelativePaths?: Partial<Record<CloudProvider, string>>
-  destinationPathModes?: Partial<Record<CloudProvider, UploadPathMode>>
-  destinationObjectKeyTemplates?: Partial<Record<CloudProvider, string | null>>
+  ruleSnapshot?: RuleUploadSnapshot
 }
 
 const NON_WORK_DIR_REASON = '非任务目录'
@@ -101,7 +86,7 @@ export class ScannerService {
 
     const settings = getSettingsRepo()
     const allSettings = settings.getAll()
-    const activeRoots = getActiveProfileScanRoots(allSettings.profiles)
+    const activeRoots = getActiveRuleScanRoots(allSettings.rules)
     const directories = activeRoots.map((root) => root.directory)
     const intervalMs = (allSettings.scan.intervalSeconds || 30) * 1000
 
@@ -151,10 +136,7 @@ export class ScannerService {
     const allSettings = settings.getAll()
     const stabilityConfig = settings.get<StabilityConfig>('stability')
     const requiredChecks = stabilityConfig?.checkCount || 3
-    const activeRoots = getActiveProfileScanRoots(allSettings.profiles)
-    const watchedDirectoriesByProvider = getProfileWatchedDirectoriesByProvider(
-      allSettings.profiles
-    )
+    const activeRoots = getActiveRuleScanRoots(allSettings.rules)
 
     const pendingStabilityChecks: ScannerStatus['pendingStabilityChecks'] = []
     for (const pending of this.pendingDirs.values()) {
@@ -171,7 +153,6 @@ export class ScannerService {
       lastScanAt: this.lastScanAt,
       nextScanAt: this.nextScanAt,
       watchedDirectories: activeRoots.map((root) => root.directory),
-      watchedDirectoriesByProvider,
       pendingStabilityChecks,
       lastScanResults: this.lastScanResults
     }
@@ -192,7 +173,7 @@ export class ScannerService {
     const settings = getSettingsRepo()
     const allSettings = settings.getAll()
     const scanConfig = allSettings.scan
-    const activeRoots = getActiveProfileScanRoots(allSettings.profiles)
+    const activeRoots = getActiveRuleScanRoots(allSettings.rules)
     const directories = activeRoots.map((root) => root.directory)
     const intervalMs = (scanConfig?.intervalSeconds || 30) * 1000
     const seenChildPaths = new Set<string>()
@@ -209,11 +190,11 @@ export class ScannerService {
           log.warn('扫描根目录不存在:', root.directory)
           continue
         }
-        const profile = getProfileById(allSettings, root.profileId)
+        const rule = getRuleById(allSettings, root.ruleId)
         const result = await this.scanRootDirectory(
           root,
           seenChildPaths,
-          profile
+          rule
         )
         scannedDirs += result.scanned
         newDirsFound += result.newFound
@@ -252,9 +233,9 @@ export class ScannerService {
   }
 
   private async scanRootDirectory(
-    root: ActiveProfileScanRoot,
+    root: ActiveRuleScanRoot,
     seenChildPaths: Set<string>,
-    profile = getProfileById(getSettingsRepo().getAll(), root.profileId)
+    rule = getRuleById(getSettingsRepo().getAll(), root.ruleId)
   ): Promise<{ scanned: number; newFound: number; existing: number; ignored: number; skipped: number }> {
     let scanned = 0
     let newFound = 0
@@ -265,20 +246,18 @@ export class ScannerService {
     try {
       const groups = await discoverUploadGroups(
         root.directory,
-        profile.discovery
+        rule.discovery
       )
       const lastGroupIndexByStream = buildLastUploadGroupIndexByStream(groups)
       for (let index = 0; index < groups.length; index++) {
         const group = groups[index]
         const result = await this.scanUploadGroupDirectory(
-          root.directory,
           group.folderPath,
           group.groupKey,
           group.variables,
           group.taskDirectories,
           seenChildPaths,
-          root.providers,
-          profile
+          rule
         )
         scanned += result.scanned
         newFound += result.newFound
@@ -287,11 +266,11 @@ export class ScannerService {
         skipped += result.skipped
 
         const shouldCloseByRollover =
-          profile.completion.mode === 'rollover' &&
+          rule.completion.mode === 'rollover' &&
           lastGroupIndexByStream.get(uploadGroupSiblingStreamKey(group.relativePath)) !== index
         const shouldCloseByMarker =
-          profile.completion.mode === 'marker-file' &&
-          existsSync(join(group.folderPath, profile.completion.markerFile))
+          rule.completion.mode === 'marker-file' &&
+          existsSync(join(group.folderPath, rule.completion.markerFile))
         if (shouldCloseByRollover || shouldCloseByMarker) {
           const uploadGroup = getDayFolderRepo().getByPath(group.folderPath)
           if (uploadGroup?.uploadGroupStatus === 'open') {
@@ -312,20 +291,18 @@ export class ScannerService {
   }
 
   private async scanUploadGroupDirectory(
-    sourceRootDir: string,
     groupPath: string,
     groupKey: string,
     groupVariables: PathVariables,
     discoveredTasks: DiscoveredUploadTaskDirectory[],
     seenChildPaths: Set<string>,
-    providers: CloudProvider[],
-    profile: AppSettings['profiles'][number]
+    rule: UploadRule
   ): Promise<{ scanned: number; newFound: number; existing: number; ignored: number; skipped: number }> {
     const dayFolder = getDayFolderRepo().ensure(
       groupPath,
       groupKey,
       groupVariables,
-      profile.id
+      rule.id
     )
     const childNames = Array.from(
       new Set(discoveredTasks.map((task) => task.folderName))
@@ -344,13 +321,11 @@ export class ScannerService {
         const variables = discoveredTask.ignored
           ? groupVariables
           : { ...groupVariables, ...discoveredTask.variables }
-        const pathContext: UploadPathResolveContext = {
-          sourcePath: childPath,
-          basePath: sourceRootDir,
-          variables
-        }
-        const targetSnapshot = this.pendingTargetSnapshot(providers, pathContext, profile)
-        const uploadRelativePath = targetSnapshot.uploadRelativePath
+        const targetSnapshot = resolveRuleUploadSnapshot(
+          rule,
+          getSettingsRepo().getAll().connections
+        )
+        const uploadRelativePath = childName
         seenChildPaths.add(childPath)
         scanned++
 
@@ -382,7 +357,6 @@ export class ScannerService {
             dayFolder.id,
             uploadRelativePath,
             variables,
-            providers,
             targetSnapshot
           )
           this.broadcastTaskStatus(task.id, task.status, 'skipped')
@@ -403,14 +377,7 @@ export class ScannerService {
             checks: 0,
             discoveredAt: new Date().toISOString(),
             lastSnapshot: new Map(),
-            uploadTargetMode: targetSnapshot.mode,
-            profileId: targetSnapshot.profileId,
-            profileName: targetSnapshot.profileName,
-            profileSnapshot: targetSnapshot.profileSnapshot,
-            destinationPrefixes: targetSnapshot.prefixes,
-            destinationUploadRelativePaths: targetSnapshot.uploadRelativePaths,
-            destinationPathModes: targetSnapshot.pathModes,
-            destinationObjectKeyTemplates: targetSnapshot.objectKeyTemplates
+            ruleSnapshot: targetSnapshot
           }
           const task = this.registerNewDir(pending)
           if (dayFolder.ignored) {
@@ -448,29 +415,11 @@ export class ScannerService {
   }
 
   private registerNewDir(pending: PendingDir): Task {
-    const settings = getSettingsRepo().getAll()
-    const snapshot =
-      pending.uploadTargetMode && pending.destinationPrefixes
-        ? {
-            mode: pending.uploadTargetMode,
-            prefixes: {
-              aliyun: pending.destinationPrefixes.aliyun || '',
-              tencent: pending.destinationPrefixes.tencent || ''
-            },
-          uploadRelativePaths:
-              pending.destinationUploadRelativePaths ||
-              this.legacyDestinationUploadRelativePaths(
-                pending.uploadTargetMode,
-                pending.uploadRelativePath
-              ),
-            uploadRelativePath: pending.uploadRelativePath,
-            profileId: pending.profileId,
-            profileName: pending.profileName,
-            profileSnapshot: pending.profileSnapshot,
-            pathModes: pending.destinationPathModes,
-            objectKeyTemplates: pending.destinationObjectKeyTemplates
-          }
-        : this.legacySnapshotForPendingDir(pending, settings)
+    const snapshot = pending.ruleSnapshot ||
+      resolveRuleUploadSnapshot(
+        getRuleById(getSettingsRepo().getAll(), undefined),
+        getSettingsRepo().getAll().connections
+      )
     const task = this.ensureTaskRegistered(
       pending.path,
       pending.folderName,
@@ -490,15 +439,14 @@ export class ScannerService {
     dayFolderId: string,
     uploadRelativePath: string,
     variables: PathVariables,
-    providers?: CloudProvider[],
-    targetSnapshot?: UploadTargetSnapshot
+    targetSnapshot: RuleUploadSnapshot
   ): Task {
     const task = this.ensureTaskRegistered(
       dirPath,
       folderName,
       dayFolderId,
       uploadRelativePath,
-      targetSnapshot || (providers ? getUploadTargetSnapshot(getSettingsRepo().getAll()) : undefined),
+      targetSnapshot,
       variables
     )
     if (task.status !== 'skipped' || task.errorMessage !== NON_WORK_DIR_REASON) {
@@ -636,7 +584,7 @@ export class ScannerService {
     try {
       const settings = getSettingsRepo().getAll()
       const fileFilter = new FileFilterService(
-        task.profileSnapshot?.filter || settings.filter
+        task.ruleSnapshot?.filter || settings.filter
       )
       const stableChecks =
         task.sourceType === 'local' && task.dayFolderId
@@ -722,7 +670,7 @@ export class ScannerService {
     folderName: string,
     dayFolderId: string,
     uploadRelativePath: string,
-    targetSnapshot?: UploadTargetSnapshot,
+    targetSnapshot?: RuleUploadSnapshot,
     groupVariables: PathVariables = {}
   ): Task {
     const taskRepo = getTaskRepo()
@@ -731,80 +679,46 @@ export class ScannerService {
       this.attachTaskToDayFolder(existing, dayFolderId)
       return taskRepo.getById(existing.id)!
     }
-
     const settings = getSettingsRepo().getAll()
-    const snapshot = targetSnapshot || getUploadTargetSnapshot(settings)
+    const snapshot = targetSnapshot ||
+      resolveRuleUploadSnapshot(
+        getRuleById(settings, settings.activeRuleId),
+        settings.connections
+      )
     return taskRepo.create({
       folderPath: dirPath,
       folderName,
-      ossPrefix: snapshot.prefixes.aliyun,
-      uploadTargetMode: snapshot.mode,
-      destinationPrefixes: snapshot.prefixes,
-      destinationUploadRelativePaths: snapshot.uploadRelativePaths,
-      destinationPathModes: snapshot.pathModes,
-      destinationObjectKeyTemplates: snapshot.objectKeyTemplates,
+      ossPrefix: snapshot.destinations.find((destination) =>
+        destination.legacyProvider === 'aliyun'
+      )?.prefix || '',
+      legacyCloudMode: snapshot.legacyCloudMode,
+      destinations: this.taskDestinationsFromSnapshot(
+        snapshot,
+        uploadRelativePath
+      ),
       dayFolderId,
       uploadRelativePath,
       sourceType: 'local',
-      profileId: snapshot.profileId,
-      profileName: snapshot.profileName,
-      profileSnapshot: snapshot.profileSnapshot,
+      ruleId: snapshot.ruleId,
+      ruleName: snapshot.ruleName,
+      ruleSnapshot: snapshot.ruleSnapshot,
       groupVariables
     })
   }
 
-  private pendingTargetSnapshot(
-    providers: CloudProvider[],
-    context: UploadPathResolveContext,
-    profile: AppSettings['profiles'][number]
-  ): {
-    uploadTargetMode: UploadTargetMode
-    destinationPrefixes: Record<CloudProvider, string>
-    destinationUploadRelativePaths: Partial<Record<CloudProvider, string>>
+  private taskDestinationsFromSnapshot(
+    snapshot: RuleUploadSnapshot,
     uploadRelativePath: string
-    mode: UploadTargetMode
-    prefixes: Record<CloudProvider, string>
-    uploadRelativePaths: Partial<Record<CloudProvider, string>>
-    profileId: string
-    profileName: string
-    profileSnapshot: AppSettings['profiles'][number]
-    pathModes: Partial<Record<CloudProvider, UploadPathMode>>
-    objectKeyTemplates: Partial<Record<CloudProvider, string | null>>
-  } {
-    const snapshot = resolveProfileUploadSnapshot(
-      profile,
-      context,
-      providers,
-    )
-    return {
-      uploadTargetMode: snapshot.mode,
-      destinationPrefixes: snapshot.prefixes,
-      destinationUploadRelativePaths: snapshot.uploadRelativePaths,
-      uploadRelativePath: snapshot.uploadRelativePath,
-      mode: snapshot.mode,
-      prefixes: snapshot.prefixes,
-      uploadRelativePaths: snapshot.uploadRelativePaths,
-      profileId: snapshot.profileId,
-      profileName: snapshot.profileName,
-      profileSnapshot: snapshot.profileSnapshot,
-      pathModes: snapshot.pathModes,
-      objectKeyTemplates: snapshot.objectKeyTemplates
-    }
-  }
-
-  private legacySnapshotForPendingDir(
-    pending: PendingDir,
-    settings: AppSettings
-  ): UploadTargetSnapshot {
-    const snapshot = getUploadTargetSnapshot(settings)
-    return {
-      ...snapshot,
-      uploadRelativePath: pending.uploadRelativePath,
-      uploadRelativePaths: this.legacyDestinationUploadRelativePaths(
-        snapshot.mode,
-        pending.uploadRelativePath
-      )
-    }
+  ): TaskDestinationCreateInput[] {
+    return snapshot.destinations.map((destination) => ({
+      provider: destination.legacyProvider,
+      connectionId: destination.connectionId,
+      connectionName: destination.connectionName,
+      prefix: destination.prefix,
+      uploadRelativePath,
+      pathMode: 'target-root',
+      objectKeyTemplate: null
+    }))
   }
 
   private attachTaskToDayFolder(
@@ -814,18 +728,6 @@ export class ScannerService {
     if (task.dayFolderId !== dayFolderId) {
       getTaskRepo().updateDayFolderId(task.id, dayFolderId)
     }
-  }
-
-  private legacyDestinationUploadRelativePaths(
-    mode: UploadTargetMode | undefined,
-    uploadRelativePath: string | undefined
-  ): Partial<Record<CloudProvider, string>> {
-    if (uploadRelativePath === undefined) return {}
-    const paths: Partial<Record<CloudProvider, string>> = {}
-    for (const provider of providersForMode(mode || 'aliyun')) {
-      paths[provider] = uploadRelativePath
-    }
-    return paths
   }
 
   private broadcastStatus(): void {

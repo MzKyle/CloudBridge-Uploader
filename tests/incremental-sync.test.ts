@@ -240,7 +240,21 @@ test('retrying one cloud preserves an already synced destination', () => {
     folderName: 'work-3',
     dayFolderId: 'day-3',
     uploadRelativePath: '2026-06-18/work-3',
-    uploadTargetMode: 'both'
+    legacyCloudMode: 'both',
+    destinations: [
+      {
+        provider: 'aliyun',
+        connectionId: 'aliyun-prod',
+        connectionName: '阿里云 OSS',
+        uploadRelativePath: '2026-06-18/work-3'
+      },
+      {
+        provider: 'tencent',
+        connectionId: 's3-compatible',
+        connectionName: 'S3 兼容存储',
+        uploadRelativePath: '2026-06-18/work-3'
+      }
+    ]
   })
   destinationRepo.updateStatus(task.id, 'aliyun', 'synced')
   destinationRepo.updateStatus(task.id, 'tencent', 'failed', 'network')

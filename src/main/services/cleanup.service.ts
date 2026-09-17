@@ -179,7 +179,7 @@ export class CleanupService {
     await getTaskRepo().reconcileFileBatches(
       task.id,
       new FileFilterService(
-        task.profileSnapshot?.filter || settings.filter
+        task.ruleSnapshot?.filter || settings.filter
       ).scanFolderBatches(task.folderPath),
       requiredStableChecks
     )

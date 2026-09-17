@@ -3,13 +3,10 @@ import { basename, dirname, join } from 'path'
 import { BrowserWindow } from 'electron'
 import log from 'electron-log'
 import { IPC } from '@shared/ipc-channels'
-import { isDateFolderName } from '@shared/day-folder'
-import { getProfileSourceDirectories } from '@shared/scan-config'
+import { isDateFolderName, joinOssPath } from '@shared/day-folder'
+import { getRuleSourceDirectories } from '@shared/scan-config'
 import { DEFAULT_SETTINGS } from '@shared/constants'
-import {
-  renderObjectKey,
-  type ObjectKeyRenderContext
-} from '@shared/upload-profile'
+import { renderPathMapping } from '@shared/path-mapping'
 import { getTaskRepo } from '../db/task.repo'
 import {
   getTaskDestinationRepo,
@@ -17,12 +14,14 @@ import {
 } from '../db/task-destination.repo'
 import { getSettingsRepo } from '../db/settings.repo'
 import { getCloudUploadService } from './cloud-upload.service'
+import { getCloudConnectionStore } from './cloud-connection-store.service'
 import type { CloudTaskUploader } from './cloud-upload.types'
 import { FileFilterService } from './file-filter.service'
 import { SpeedCalculator } from '../utils/speed-calculator'
 import { getUploadSemaphore } from '../utils/upload-semaphore'
 import type {
   CloudProvider,
+  PathMappingConfig,
   Task,
   TaskProgress,
   TaskStatus
@@ -63,7 +62,12 @@ interface LogicalProgress {
   lastPersistAt: number
 }
 
-type ObjectKeyBaseContext = Omit<ObjectKeyRenderContext, 'relativePath'>
+interface ObjectKeyBaseContext {
+  sourcePath: string
+  basePath?: string
+  variables: Record<string, string>
+  rulePathMapping?: PathMappingConfig
+}
 
 const RETRY_DELAYS_MS = [1000, 2000, 5000, 15000, 30000]
 const PROGRESS_PERSIST_INTERVAL_MS = 1000
@@ -106,6 +110,7 @@ export class TaskRunnerService {
     const destinationByProvider = new Map(
       destinations.map((destination) => [destination.provider, destination])
     )
+    const connectionStore = getCloudConnectionStore()
     const objectKeyBaseContext = this.buildObjectKeyBaseContext(task)
 
     const jobs = destinationRepo.listReadyFileTargets(
@@ -124,10 +129,8 @@ export class TaskRunnerService {
     const jobProviders = new Set(jobs.map((job) => job.provider))
     for (const destination of destinations) {
       if (!jobProviders.has(destination.provider)) continue
-      const error = getCloudUploadService().validateProvider(
-        destination.provider,
-        settings
-      )
+      const connection = connectionStore.resolve(destination.connectionId)
+      const error = getCloudUploadService().validateConnection(connection)
       if (error) throw new Error(error)
     }
     const initialLogicalSummary = taskRepo.summarizeFiles(task.id)
@@ -144,9 +147,9 @@ export class TaskRunnerService {
       for (const provider of providers) {
         const destination = destinationByProvider.get(provider)
         if (!destination) continue
+        const connection = connectionStore.resolve(destination.connectionId)
         const uploader = await getCloudUploadService().createTaskUploader(
-          provider,
-          settings,
+          connection,
           settings.upload.multipartThreshold
         )
         const providerSummary = destinationRepo.summarizeFileTargets(
@@ -238,7 +241,7 @@ export class TaskRunnerService {
   private async prepareUploadPlan(task: Task, stableChecks: number): Promise<UploadPipelineResult> {
     const settings = getSettingsRepo().getAll()
     const fileFilter = new FileFilterService(
-      task.profileSnapshot?.filter || settings.filter
+      task.ruleSnapshot?.filter || settings.filter
     )
     const files: UploadPipelineResult['files'] = []
     for await (const batch of fileFilter.scanFolderBatches(task.folderPath)) {
@@ -311,43 +314,28 @@ export class TaskRunnerService {
     objectKeyBaseContext: ObjectKeyBaseContext
   ): string {
     if (plannedObjectKey) return plannedObjectKey
-    return renderObjectKey(
+    const mapping = objectKeyBaseContext.rulePathMapping || { mode: 'keep-relative' as const }
+    const mappedPath = renderPathMapping(
+      mapping,
       {
-        provider: destination.provider,
-        prefix: destination.prefix,
-        uploadRelativePath: destination.uploadRelativePath,
-        pathMode: destination.pathMode,
-        objectKeyTemplate: destination.objectKeyTemplate
-      },
-      this.buildObjectKeyContext(objectKeyBaseContext, relativePath)
+        sourcePath: objectKeyBaseContext.sourcePath,
+        relativePath,
+        variables: objectKeyBaseContext.variables
+      }
     )
+    return joinOssPath(destination.prefix, mappedPath)
   }
 
-	  private buildObjectKeyBaseContext(task: Task): ObjectKeyBaseContext {
-	    const groupVariables = task.groupVariables || {}
-	    const variables = Object.keys(groupVariables).length > 0
-	      ? groupVariables
-	      : this.deriveLegacyVariables(task.folderPath)
+  private buildObjectKeyBaseContext(task: Task): ObjectKeyBaseContext {
+    const groupVariables = task.groupVariables || {}
+    const variables = Object.keys(groupVariables).length > 0
+      ? groupVariables
+      : this.deriveLegacyVariables(task.folderPath)
     return {
       sourcePath: task.folderPath,
-      basePath: this.findProfileBasePath(task),
-      dateName: variables.date,
-      workDirName: variables.workDir || variables.session || task.folderName,
+      basePath: this.findRuleBasePath(task),
       variables,
-      folderName: task.folderName,
-      profileId: task.profileId,
-      profileName: task.profileName,
-      createdAt: task.createdAt
-    }
-  }
-
-  private buildObjectKeyContext(
-    baseContext: ObjectKeyBaseContext,
-    relativePath: string
-  ): ObjectKeyRenderContext {
-    return {
-      ...baseContext,
-      relativePath
+      rulePathMapping: task.ruleSnapshot?.pathMapping
     }
   }
 
@@ -359,10 +347,10 @@ export class TaskRunnerService {
       : { session: workDirName, workDir: workDirName }
   }
 
-  private findProfileBasePath(task: Task): string | undefined {
-    const profile = task.profileSnapshot
-    if (!profile) return undefined
-    for (const directory of getProfileSourceDirectories(profile)) {
+  private findRuleBasePath(task: Task): string | undefined {
+    const rule = task.ruleSnapshot
+    if (!rule) return undefined
+    for (const directory of getRuleSourceDirectories(rule)) {
       if (
         task.folderPath === directory ||
         task.folderPath.startsWith(`${directory}/`) ||

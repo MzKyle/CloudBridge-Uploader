@@ -17,6 +17,7 @@ import type {
   TaskDetail,
   TaskListQuery,
   TaskStatus,
+  UploadPathPreview,
   UploadQueueStartInput,
   UploadQueueStatus,
   UploadQueueStopInput,
@@ -24,7 +25,6 @@ import type {
   UploadRuleDryRunInput,
   UploadRuleDryRunResult
 } from '@shared/types'
-import type { UploadPathPreview } from '@shared/upload-profile'
 
 const api = window.api
 
@@ -41,8 +41,8 @@ export async function fetchTaskDetail(taskId: string): Promise<TaskDetail> {
   return (await api.invoke(IPC.TASK_DETAIL, { taskId })) as TaskDetail
 }
 
-export async function addFolder(folderPath: string, profileId?: string): Promise<Task> {
-  return (await api.invoke(IPC.TASK_ADD_FOLDER, { folderPath, profileId })) as Task
+export async function addFolder(folderPath: string, ruleId?: string): Promise<Task> {
+  return (await api.invoke(IPC.TASK_ADD_FOLDER, { folderPath, ruleId })) as Task
 }
 
 export async function pauseTask(taskId: string): Promise<void> {
@@ -121,11 +121,11 @@ export async function saveSettings(data: Partial<AppSettings>): Promise<void> {
   await api.invoke(IPC.SETTINGS_SAVE, data)
 }
 
-export async function testOSS(config: AppSettings['oss']): Promise<{ ok: boolean; error?: string }> {
+export async function testOSS(config: AppSettings['connections'][number]['config']): Promise<{ ok: boolean; error?: string }> {
   return (await api.invoke(IPC.SETTINGS_TEST_OSS, config)) as { ok: boolean; error?: string }
 }
 
-export async function testTencentS3(config: AppSettings['tencentS3']): Promise<{ ok: boolean; error?: string }> {
+export async function testTencentS3(config: AppSettings['connections'][number]['config']): Promise<{ ok: boolean; error?: string }> {
   return (await api.invoke(IPC.SETTINGS_TEST_TENCENT_S3, config)) as { ok: boolean; error?: string }
 }
 
@@ -138,9 +138,8 @@ export async function dryRunUploadRule(input: UploadRuleDryRunInput): Promise<Up
 }
 
 export async function previewUploadPath(input: {
-  profileId?: string
+  ruleId?: string
   sourcePath: string
-  provider?: CloudProvider
   sampleFiles?: string[]
 }): Promise<UploadPathPreview> {
   return (await api.invoke(IPC.UPLOAD_PATH_PREVIEW, input)) as UploadPathPreview

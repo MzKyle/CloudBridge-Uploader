@@ -2,7 +2,7 @@ import type { AppSettings } from './types'
 
 type ScannerRelevantSettings = Pick<
   AppSettings,
-  'scan' | 'stability' | 'profiles' | 'activeProfileId'
+  'scan' | 'stability' | 'rules' | 'activeRuleId' | 'connections'
 >
 
 export function shouldRestartScannerAfterSettingsSave(
@@ -11,7 +11,8 @@ export function shouldRestartScannerAfterSettingsSave(
   return (
     data.scan !== undefined ||
     data.stability !== undefined ||
-    data.profiles !== undefined ||
-    data.activeProfileId !== undefined
+    data.rules !== undefined ||
+    data.activeRuleId !== undefined ||
+    data.connections !== undefined
   )
 }

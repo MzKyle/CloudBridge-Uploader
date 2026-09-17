@@ -10,13 +10,15 @@ import type {
   TaskFileDetail,
   TaskStatus,
   SourceType,
-  UploadPathMode,
-  UploadProfile,
-  UploadTargetMode,
+  UploadRule,
+  LegacyCloudMode,
   PathVariables
 } from '@shared/types'
-import { getTaskDestinationRepo } from './task-destination.repo'
-import { providersForMode } from '@shared/cloud-upload'
+import {
+  getTaskDestinationRepo,
+  legacyModeFromProviders,
+  type TaskDestinationCreateInput
+} from './task-destination.repo'
 
 function normalizeFolderPath(p: string): string {
   return normalize(p).replace(/[\\/]+$/, '')
@@ -26,9 +28,9 @@ function rowToTask(
   row: Record<string, unknown>,
   destinations?: TaskDestination[]
 ): Task {
-  const profileSnapshot =
+  const ruleSnapshot =
     typeof row.profile_snapshot_json === 'string' && row.profile_snapshot_json
-      ? safeParseProfile(row.profile_snapshot_json)
+      ? safeParseRule(row.profile_snapshot_json)
       : null
   return {
     id: row.id as string,
@@ -40,7 +42,7 @@ function rowToTask(
     totalBytes: row.total_bytes as number,
     uploadedBytes: row.uploaded_bytes as number,
     ossPrefix: (row.oss_prefix as string) || '',
-    uploadTargetMode: (row.upload_target_mode as UploadTargetMode) || 'aliyun',
+    legacyCloudMode: (row.upload_target_mode as LegacyCloudMode) || 'aliyun',
     destinations:
       destinations ?? getTaskDestinationRepo().listByTask(row.id as string),
     dayFolderId: (row.day_folder_id as string) || null,
@@ -48,9 +50,9 @@ function rowToTask(
     errorMessage: (row.error_message as string) || null,
     sourceType: row.source_type as SourceType,
     sourceMachineId: (row.source_machine_id as string) || null,
-    profileId: (row.profile_id as string) || null,
-    profileName: (row.profile_name as string) || null,
-    profileSnapshot,
+    ruleId: (row.profile_id as string) || null,
+    ruleName: (row.profile_name as string) || null,
+    ruleSnapshot,
     groupVariables: safeParseVariables(row.group_variables_json),
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
@@ -58,9 +60,9 @@ function rowToTask(
   }
 }
 
-function safeParseProfile(value: string): UploadProfile | null {
+function safeParseRule(value: string): UploadRule | null {
   try {
-    return JSON.parse(value) as UploadProfile
+    return JSON.parse(value) as UploadRule
   } catch {
     return null
   }
@@ -97,6 +99,22 @@ const UPLOAD_QUEUE_CANDIDATE_STATUSES: TaskStatus[] = [
   'failed',
   'paused'
 ]
+
+function defaultDestinationsForTask(
+  uploadRelativePath: string
+): TaskDestinationCreateInput[] {
+  return [
+    {
+      provider: 'aliyun',
+      connectionId: 'aliyun-prod',
+      connectionName: '阿里云 OSS',
+      prefix: '',
+      uploadRelativePath,
+      pathMode: 'target-root',
+      objectKeyTemplate: null
+    }
+  ]
+}
 
 function rowToTaskFile(row: Record<string, unknown>): TaskFile {
   return {
@@ -281,34 +299,31 @@ export class TaskRepo {
     folderPath: string
     folderName: string
     ossPrefix?: string
-    uploadTargetMode?: UploadTargetMode
-    destinationPrefixes?: Partial<Record<CloudProvider, string>>
-    destinationUploadRelativePaths?: Partial<Record<CloudProvider, string>>
-    destinationPathModes?: Partial<Record<CloudProvider, UploadPathMode>>
-    destinationObjectKeyTemplates?: Partial<Record<CloudProvider, string | null>>
+    legacyCloudMode?: LegacyCloudMode
+    destinations?: TaskDestinationCreateInput[]
     dayFolderId?: string
     uploadRelativePath?: string
     sourceType?: SourceType
     sourceMachineId?: string
-    profileId?: string | null
-    profileName?: string | null
-    profileSnapshot?: UploadProfile | null
+    ruleId?: string | null
+    ruleName?: string | null
+    ruleSnapshot?: UploadRule | null
     groupVariables?: PathVariables
   }): Task {
     const db = getDb()
     const id = uuid()
     const now = new Date().toISOString()
     const normalizedPath = normalizeFolderPath(params.folderPath)
-    const uploadTargetMode = params.uploadTargetMode || 'aliyun'
     const uploadRelativePath = params.uploadRelativePath ?? params.folderName
-    const destinationUploadRelativePaths =
-      params.destinationUploadRelativePaths ||
-      Object.fromEntries(
-        providersForMode(uploadTargetMode).map((provider) => [
-          provider,
-          uploadRelativePath
-        ])
-      )
+    const destinations = params.destinations?.length
+      ? params.destinations
+      : defaultDestinationsForTask(uploadRelativePath)
+    const legacyCloudMode = params.legacyCloudMode ||
+      legacyModeFromProviders(destinations.map((destination) => destination.provider))
+    const normalizedDestinations = destinations.map((destination) => ({
+      ...destination,
+      uploadRelativePath: destination.uploadRelativePath ?? uploadRelativePath
+    }))
     db.prepare(
       `INSERT INTO tasks (
         id, folder_path, folder_name, status, oss_prefix, upload_target_mode,
@@ -321,26 +336,22 @@ export class TaskRepo {
       normalizedPath,
       params.folderName,
       params.ossPrefix || '',
-      uploadTargetMode,
+      legacyCloudMode,
       params.dayFolderId || null,
       uploadRelativePath,
       params.sourceType || 'local',
       params.sourceMachineId || null,
-      params.profileId || null,
-      params.profileName || null,
-      params.profileSnapshot ? JSON.stringify(params.profileSnapshot) : null,
+      params.ruleId || null,
+      params.ruleName || null,
+      params.ruleSnapshot ? JSON.stringify(params.ruleSnapshot) : null,
       JSON.stringify(params.groupVariables || {}),
       now,
       now
     )
     getTaskDestinationRepo().ensureForTask(
       id,
-      uploadTargetMode,
-      params.destinationPrefixes || { aliyun: params.ossPrefix || '' },
-      'pending',
-      destinationUploadRelativePaths,
-      params.destinationPathModes,
-      params.destinationObjectKeyTemplates
+      normalizedDestinations,
+      'pending'
     )
     markDayFolderContentActivity(params.dayFolderId, now)
     return this.getById(id)!

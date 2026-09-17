@@ -4,53 +4,15 @@
 
 export const APP_NAME = '云桥上传器'
 export const DEFAULT_WORK_DIR_NAME_PATTERN = '^\\d{2}-\\d{2}-\\d{2}$'
-export const DEFAULT_UPLOAD_PROFILE_ID = 'default'
+export const DEFAULT_UPLOAD_RULE_ID = 'default'
+export const DEFAULT_ALIYUN_CONNECTION_ID = 'aliyun-prod'
+export const DEFAULT_S3_CONNECTION_ID = 's3-compatible'
 
 export const DEFAULT_SETTINGS = {
-  scan: {
-    directories: [],
-    providerDirectories: {
-      aliyun: [],
-      tencent: []
-    },
-    intervalSeconds: 30,
-    workDirNamePattern: DEFAULT_WORK_DIR_NAME_PATTERN
-  },
-  upload: {
-    maxConcurrentTasks: 4,
-    maxFilesPerTask: 12,
-    maxConcurrentUploads: 12,
-    multipartThreshold: 100 * 1024 * 1024, // 100MB
-    startAfterTime: '20:30',
-    endBeforeTime: '23:59'
-  },
-  cloud: {
-    targetMode: 'aliyun' as const
-  },
-  oss: {
-    endpoint: '',
-    bucket: '',
-    region: '',
-    prefix: '',
-    pathMode: 'target-root' as const,
-    pathSegmentCount: 2,
-    accessKeyId: '',
-    accessKeySecret: ''
-  },
-  tencentS3: {
-    endpoint: '',
-    bucket: '',
-    region: '',
-    prefix: '',
-    pathMode: 'target-root' as const,
-    pathSegmentCount: 2,
-    accessKeyId: '',
-    accessKeySecret: '',
-    allowInsecureTls: false
-  },
-  profiles: [
+  schemaVersion: 3 as const,
+  rules: [
     {
-      id: DEFAULT_UPLOAD_PROFILE_ID,
+      id: DEFAULT_UPLOAD_RULE_ID,
       name: '默认归档',
       enabled: true,
       source: {
@@ -58,8 +20,7 @@ export const DEFAULT_SETTINGS = {
       },
       destinations: [
         {
-          connectionId: 'aliyun',
-          required: true
+          connectionId: DEFAULT_ALIYUN_CONNECTION_ID
         }
       ],
       pathMapping: {
@@ -78,37 +39,56 @@ export const DEFAULT_SETTINGS = {
         retentionDays: 7,
         onlyAfterSealed: true
       },
-      targetMode: 'aliyun' as const,
       filter: {
         whitelist: [],
         blacklist: [],
         regex: [],
         suffixes: []
-      },
-      scan: {
-        providerDirectories: {
-          aliyun: [],
-          tencent: []
-        },
-        workDirNamePattern: DEFAULT_WORK_DIR_NAME_PATTERN
-      },
-      providers: {
-        aliyun: {
-          prefix: '',
-          pathMode: 'target-root' as const,
-          pathSegmentCount: 2,
-          objectKeyTemplate: '{relativePath}'
-        },
-        tencent: {
-          prefix: '',
-          pathMode: 'target-root' as const,
-          pathSegmentCount: 2,
-          objectKeyTemplate: '{relativePath}'
-        }
-      },
+      }
     }
   ],
-  activeProfileId: DEFAULT_UPLOAD_PROFILE_ID,
+  activeRuleId: DEFAULT_UPLOAD_RULE_ID,
+  connections: [
+    {
+      id: DEFAULT_ALIYUN_CONNECTION_ID,
+      name: '阿里云 OSS',
+      type: 'aliyun-oss' as const,
+      config: {
+        endpoint: '',
+        bucket: '',
+        region: '',
+        prefix: '',
+        accessKeyId: '',
+        accessKeySecret: ''
+      }
+    },
+    {
+      id: DEFAULT_S3_CONNECTION_ID,
+      name: 'S3 兼容存储',
+      type: 's3' as const,
+      config: {
+        endpoint: '',
+        bucket: '',
+        region: '',
+        prefix: '',
+        accessKeyId: '',
+        accessKeySecret: '',
+        forcePathStyle: true,
+        allowInsecureTls: false
+      }
+    }
+  ],
+  scan: {
+    intervalSeconds: 30
+  },
+  upload: {
+    maxConcurrentTasks: 4,
+    maxFilesPerTask: 12,
+    maxConcurrentUploads: 12,
+    multipartThreshold: 100 * 1024 * 1024, // 100MB
+    startAfterTime: '20:30',
+    endBeforeTime: '23:59'
+  },
   filter: {
     whitelist: [],
     blacklist: [],
@@ -159,4 +139,9 @@ export const DAY_FOLDER_STATUS_LABELS: Record<string, string> = {
 export const CLOUD_PROVIDER_LABELS = {
   aliyun: '阿里云',
   tencent: '腾讯云'
+} as const
+
+export const CLOUD_CONNECTION_TYPE_LABELS = {
+  'aliyun-oss': '阿里云 OSS',
+  s3: 'S3 兼容存储'
 } as const

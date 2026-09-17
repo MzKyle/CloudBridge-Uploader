@@ -23,7 +23,7 @@ export type DayFolderStatus =
   | 'completed'
   | 'completed_with_skips'
 export type CloudProvider = 'aliyun' | 'tencent'
-export type UploadTargetMode = 'aliyun' | 'tencent' | 'both'
+export type LegacyCloudMode = 'aliyun' | 'tencent' | 'both'
 export type UploadPathMode =
   | 'target-root'
   | 'date-workdir'
@@ -46,7 +46,6 @@ export interface UploadSourceConfig {
 
 export interface UploadDestinationRef {
   connectionId: string
-  required?: boolean
 }
 
 export interface PathMappingConfig {
@@ -78,18 +77,39 @@ export interface CleanupPolicy {
 
 export type CloudConnectionType = 'aliyun-oss' | 's3'
 
+export interface AliyunOSSConnectionConfig {
+  endpoint: string
+  bucket: string
+  region: string
+  prefix?: string
+  accessKeyId: string
+  accessKeySecret: string
+}
+
+export interface S3ConnectionConfig {
+  endpoint: string
+  bucket: string
+  region: string
+  prefix?: string
+  accessKeyId: string
+  accessKeySecret: string
+  forcePathStyle?: boolean
+  allowInsecureTls?: boolean
+}
+
+export type CloudConnectionConfig = AliyunOSSConnectionConfig | S3ConnectionConfig
+
 export interface CloudConnection {
   id: string
   name: string
   type: CloudConnectionType
-  provider?: CloudProvider
-  config: Record<string, unknown>
+  config: CloudConnectionConfig
 }
 
 export interface ConnectionTestInput {
   connectionId: string
   type: CloudConnectionType
-  config: Partial<OSSConfig & TencentS3Config>
+  config: Partial<AliyunOSSConnectionConfig & S3ConnectionConfig>
 }
 
 export interface ConnectionTestResult {
@@ -98,8 +118,8 @@ export interface ConnectionTestResult {
 }
 
 export interface UploadRuleDryRunInput {
-  profileId?: string
-  rule?: UploadProfile
+  ruleId?: string
+  rule?: UploadRule
   sourceRoot?: string
   sampleLimit?: number
 }
@@ -109,7 +129,6 @@ export interface UploadRuleDryRunFilePreview {
   size: number
   objectKeys: Array<{
     connectionId: string
-    provider: CloudProvider
     key: string
   }>
 }
@@ -147,6 +166,20 @@ export interface UploadRuleDryRunResult {
   groups: UploadRuleDryRunGroupPreview[]
 }
 
+export interface UploadPathPreview {
+  ruleId: string
+  ruleName: string
+  sourcePath: string
+  destinations: Array<{
+    connectionId: string
+    prefix: string
+    variables: PathVariables
+    keys: string[]
+    errors: string[]
+    warnings: string[]
+  }>
+}
+
 export interface Task {
   id: string
   folderPath: string
@@ -157,16 +190,16 @@ export interface Task {
   totalBytes: number
   uploadedBytes: number
   ossPrefix: string
-  uploadTargetMode: UploadTargetMode
+  legacyCloudMode: LegacyCloudMode
   destinations: TaskDestination[]
   dayFolderId: string | null
   uploadRelativePath: string
   errorMessage: string | null
   sourceType: SourceType
   sourceMachineId: string | null
-  profileId: string | null
-  profileName: string | null
-  profileSnapshot: UploadProfile | null
+  ruleId: string | null
+  ruleName: string | null
+  ruleSnapshot: UploadRule | null
   groupVariables: PathVariables
   createdAt: string
   updatedAt: string
@@ -205,6 +238,8 @@ export interface TaskDestination {
   id: string
   taskId: string
   provider: CloudProvider
+  connectionId: string
+  connectionName: string | null
   status: TaskStatus
   prefix: string
   uploadRelativePath: string
@@ -225,6 +260,7 @@ export interface TaskFileDestination {
   taskFileId: string
   taskDestinationId: string
   provider: CloudProvider
+  connectionId: string
   status: FileStatus
   objectKey: string | null
   plannedObjectKey: string | null
@@ -302,7 +338,7 @@ export interface DayFolderSummary {
   folderName: string
   date: string
   status: DayFolderStatus
-  profileId: string | null
+  ruleId: string | null
   groupKey: string
   variables: PathVariables
   uploadGroupStatus: UploadGroupStatus
@@ -338,46 +374,7 @@ export interface FilterRules {
   suffixes: string[]    // 后缀（如 .jpg, .csv）
 }
 
-export interface OSSConfig {
-  endpoint: string
-  bucket: string
-  region: string
-  prefix: string
-  pathMode: UploadPathMode
-  pathSegmentCount: number
-  accessKeyId: string
-  accessKeySecret: string
-}
-
-export interface TencentS3Config {
-  endpoint: string
-  bucket: string
-  region: string
-  prefix: string
-  pathMode: UploadPathMode
-  pathSegmentCount: number
-  accessKeyId: string
-  accessKeySecret: string
-  allowInsecureTls: boolean
-}
-
-export interface CloudConfig {
-  targetMode: UploadTargetMode
-}
-
-export interface UploadProfileProviderConfig {
-  prefix: string
-  pathMode: UploadPathMode
-  pathSegmentCount: number
-  objectKeyTemplate: string
-}
-
-export interface UploadProfileScanConfig {
-  providerDirectories: Record<CloudProvider, string[]>
-  workDirNamePattern?: string
-}
-
-export interface UploadProfile {
+export interface UploadRule {
   id: string
   name: string
   enabled: boolean
@@ -387,11 +384,7 @@ export interface UploadProfile {
   discovery: DiscoveryConfig
   completion: CompletionPolicy
   cleanup: CleanupPolicy
-  cloudConnections?: CloudConnection[]
-  targetMode: UploadTargetMode
   filter: FilterRules
-  scan: UploadProfileScanConfig
-  providers: Record<CloudProvider, UploadProfileProviderConfig>
 }
 
 export interface WebhookConfig {
@@ -401,10 +394,7 @@ export interface WebhookConfig {
 }
 
 export interface ScanConfig {
-  directories: string[]
-  providerDirectories: Record<CloudProvider, string[]>
   intervalSeconds: number
-  workDirNamePattern?: string
 }
 
 export interface UploadConfig {
@@ -433,13 +423,12 @@ export interface CleanupConfig {
 }
 
 export interface AppSettings {
+  schemaVersion: 3
+  rules: UploadRule[]
+  activeRuleId: string
+  connections: CloudConnection[]
   scan: ScanConfig
   upload: UploadConfig
-  cloud: CloudConfig
-  oss: OSSConfig
-  tencentS3: TencentS3Config
-  profiles: UploadProfile[]
-  activeProfileId: string
   filter: FilterRules
   webhook: WebhookConfig
   hotkey: string
@@ -454,7 +443,6 @@ export interface ScannerStatus {
   lastScanAt: string | null
   nextScanAt: string | null
   watchedDirectories: string[]
-  watchedDirectoriesByProvider: Record<CloudProvider, string[]>
   pendingStabilityChecks: Array<{
     path: string
     checks: number

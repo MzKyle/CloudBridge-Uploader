@@ -20,7 +20,7 @@ import { TaskRepo } from '../src/main/db/task.repo'
 import { getTaskDestinationRepo } from '../src/main/db/task-destination.repo'
 import { CleanupService } from '../src/main/services/cleanup.service'
 import { isSafeCleanupPath } from '../src/main/utils/cleanup-path-safety'
-import type { CleanupPolicy, UploadProfile } from '../src/shared/types'
+import type { CleanupPolicy, UploadRule } from '../src/shared/types'
 
 interface CleanupFixture {
   groupPath: string
@@ -48,9 +48,9 @@ function createCleanupFixture(root: string): CleanupFixture {
 
 function createCleanupFixtureForProfile(
   root: string,
-  profileId: string,
+  ruleId: string,
   groupName: string,
-  profileSnapshot?: UploadProfile
+  ruleSnapshot?: UploadRule
 ): CleanupFixture {
   const groupPath = join(root, groupName)
   const taskPath = join(groupPath, 'session-1')
@@ -63,7 +63,7 @@ function createCleanupFixtureForProfile(
     groupPath,
     groupName,
     { batch: groupName },
-    profileId
+    ruleId
   )
   dayFolderRepo.updateDiscovery(group.id, ['session-1'])
 
@@ -73,11 +73,19 @@ function createCleanupFixtureForProfile(
     folderName: 'session-1',
     dayFolderId: group.id,
     uploadRelativePath: `${groupName}/session-1`,
-    uploadTargetMode: 'aliyun',
+    legacyCloudMode: 'aliyun',
+    destinations: [
+      {
+        provider: 'aliyun',
+        connectionId: 'aliyun-prod',
+        connectionName: '阿里云 OSS',
+        uploadRelativePath: `${groupName}/session-1`
+      }
+    ],
     sourceType: 'local',
-    profileId,
-    profileName: profileSnapshot?.name || profileId,
-    profileSnapshot,
+    ruleId,
+    ruleName: ruleSnapshot?.name || ruleId,
+    ruleSnapshot,
     groupVariables: { batch: groupName }
   })
   const stats = statSync(filePath)
@@ -95,29 +103,21 @@ function createProfile(
   id: string,
   root: string,
   cleanup: CleanupPolicy
-): UploadProfile {
-  const base = DEFAULT_SETTINGS.profiles[0] as UploadProfile
+): UploadRule {
+  const base = DEFAULT_SETTINGS.rules[0] as UploadRule
   return {
     ...base,
     id,
     name: id,
     source: {
-      root,
       roots: [root]
     },
-    cleanup,
-    scan: {
-      ...base.scan,
-      providerDirectories: {
-        aliyun: [root],
-        tencent: []
-      }
-    }
+    cleanup
   }
 }
 
 function saveProfiles(
-  profiles: UploadProfile[],
+  rules: UploadRule[],
   cleanup: CleanupPolicy = {
     enabled: false,
     retentionDays: 7,
@@ -125,8 +125,8 @@ function saveProfiles(
   }
 ): void {
   new SettingsRepo().saveAll({
-    profiles,
-    activeProfileId: profiles[0]?.id || 'default',
+    rules,
+    activeRuleId: rules[0]?.id || 'default',
     cleanup
   })
 }

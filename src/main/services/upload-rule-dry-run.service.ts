@@ -3,13 +3,11 @@ import { getSettingsRepo } from '../db/settings.repo'
 import { assertSafeCleanupPath } from '../utils/cleanup-path-safety'
 import { discoverUploadGroups } from './date-directory-discovery'
 import { FileFilterService, type ScannedFile } from './file-filter.service'
-import { providerForConnectionId } from '@shared/cloud-upload'
 import { renderPathMapping, validatePathMappingTemplate } from '@shared/path-mapping'
-import { getProfileById } from '@shared/upload-profile'
+import { getRuleById, resolveRuleDestinations } from '@shared/upload-rule'
 import type {
   AppSettings,
-  CloudProvider,
-  UploadProfile,
+  UploadRule,
   UploadRuleDryRunFilePreview,
   UploadRuleDryRunGroupPreview,
   UploadRuleDryRunInput,
@@ -18,7 +16,6 @@ import type {
 
 interface ResolvedDestination {
   connectionId: string
-  provider: CloudProvider
   prefix: string
 }
 
@@ -42,10 +39,10 @@ export async function dryRunUploadRule(
   baseSettings: AppSettings
 ): Promise<UploadRuleDryRunResult> {
   const settings = mergeRuleIntoSettings(baseSettings, input.rule)
-  const profile = input.rule || getProfileById(settings, input.profileId)
+  const rule = input.rule || getRuleById(settings, input.ruleId)
   const sourceRoot = (
     input.sourceRoot ||
-    profile.source.roots[0] ||
+    rule.source.roots[0] ||
     ''
   ).trim()
   const errors: string[] = []
@@ -59,7 +56,7 @@ export async function dryRunUploadRule(
 
   if (!sourceRoot) {
     errors.push('Source Root 不能为空')
-    return buildResult(profile, sourceRoot, errors, warnings, groupPreviews, {
+    return buildResult(rule, sourceRoot, errors, warnings, groupPreviews, {
       filesScanned,
       sampledFiles,
       taskCount,
@@ -76,11 +73,11 @@ export async function dryRunUploadRule(
     errors.push(`Source Root 不存在或不可访问: ${sourceRoot} (${formatError(error)})`)
   }
 
-  const destinations = resolveDestinations(settings, profile, errors, warnings)
-  validateFilterRegex(profile, errors)
+  const destinations = resolveDestinations(settings, rule, errors)
+  validateFilterRegex(rule, errors)
 
   if (errors.length > 0) {
-    return buildResult(profile, sourceRoot, errors, warnings, groupPreviews, {
+    return buildResult(rule, sourceRoot, errors, warnings, groupPreviews, {
       filesScanned,
       sampledFiles,
       taskCount,
@@ -90,10 +87,10 @@ export async function dryRunUploadRule(
 
   let groups
   try {
-    groups = await discoverUploadGroups(sourceRoot, profile.discovery)
+    groups = await discoverUploadGroups(sourceRoot, rule.discovery)
   } catch (error) {
     errors.push(`Discovery 规则无效: ${formatError(error)}`)
-    return buildResult(profile, sourceRoot, errors, warnings, groupPreviews, {
+    return buildResult(rule, sourceRoot, errors, warnings, groupPreviews, {
       filesScanned,
       sampledFiles,
       taskCount,
@@ -106,7 +103,7 @@ export async function dryRunUploadRule(
   }
 
   const duplicateKeyOwners = new Map<string, string>()
-  const sourceRoots = profile.source.roots.length > 0 ? profile.source.roots : [sourceRoot]
+  const sourceRoots = rule.source.roots.length > 0 ? rule.source.roots : [sourceRoot]
 
   for (const group of groups) {
     const groupPreview: UploadRuleDryRunGroupPreview = {
@@ -131,7 +128,7 @@ export async function dryRunUploadRule(
       }
 
       taskCount++
-      if (profile.cleanup.enabled) {
+      if (rule.cleanup.enabled) {
         try {
           await assertSafeCleanupPath({
             targetPath: task.folderPath,
@@ -144,14 +141,14 @@ export async function dryRunUploadRule(
         }
       }
 
-      const templateErrors = profile.pathMapping.mode === 'template'
-        ? validatePathMappingTemplate(profile.pathMapping.template || '', task.variables)
+      const templateErrors = rule.pathMapping.mode === 'template'
+        ? validatePathMappingTemplate(rule.pathMapping.template || '', task.variables)
         : []
       for (const templateError of templateErrors) {
         errors.push(`Path Mapping 无效: ${templateError}`)
       }
 
-      const files = await sampleTaskFiles(task.folderPath, profile, sampleLimit)
+      const files = await sampleTaskFiles(task.folderPath, rule, sampleLimit)
       filesScanned += files.length
       sampledFiles += files.length
       if (files.length === 0) {
@@ -163,7 +160,7 @@ export async function dryRunUploadRule(
         const objectKeys: UploadRuleDryRunFilePreview['objectKeys'] = []
         for (const destination of destinations) {
           try {
-            const mappedPath = renderPathMapping(profile.pathMapping, {
+            const mappedPath = renderPathMapping(rule.pathMapping, {
               sourcePath: task.folderPath,
               relativePath: file.relativePath,
               variables: task.variables
@@ -184,7 +181,6 @@ export async function dryRunUploadRule(
             }
             objectKeys.push({
               connectionId: destination.connectionId,
-              provider: destination.provider,
               key
             })
           } catch (error) {
@@ -219,7 +215,7 @@ export async function dryRunUploadRule(
     errors.push('没有任何 Upload Task 匹配当前 Discovery 规则')
   }
 
-  return buildResult(profile, sourceRoot, dedupe(errors), dedupe(warnings), groupPreviews, {
+  return buildResult(rule, sourceRoot, dedupe(errors), dedupe(warnings), groupPreviews, {
     filesScanned,
     sampledFiles,
     taskCount,
@@ -229,92 +225,38 @@ export async function dryRunUploadRule(
 
 function mergeRuleIntoSettings(
   settings: AppSettings,
-  rule: UploadProfile | undefined
+  rule: UploadRule | undefined
 ): AppSettings {
   if (!rule) return settings
-  const profiles = settings.profiles.some((profile) => profile.id === rule.id)
-    ? settings.profiles.map((profile) => profile.id === rule.id ? rule : profile)
-    : [...settings.profiles, rule]
+  const rules = settings.rules.some((item) => item.id === rule.id)
+    ? settings.rules.map((item) => item.id === rule.id ? rule : item)
+    : [...settings.rules, rule]
   return {
     ...settings,
-    profiles,
-    activeProfileId: rule.id
+    rules,
+    activeRuleId: rule.id
   }
 }
 
 function resolveDestinations(
   settings: AppSettings,
-  profile: UploadProfile,
-  errors: string[],
-  warnings: string[]
+  rule: UploadRule,
+  errors: string[]
 ): ResolvedDestination[] {
-  const destinations = profile.destinations.length > 0
-    ? profile.destinations
-    : [{ connectionId: 'aliyun', required: true }]
-  const resolved: ResolvedDestination[] = []
-
-  for (const destination of destinations) {
-    const connection = resolveDestination(settings, profile, destination.connectionId)
-    if (!connection) {
-      const message = `Destination Connection 不存在: ${destination.connectionId}`
-      if (destination.required ?? true) errors.push(message)
-      else warnings.push(message)
-      continue
-    }
-    resolved.push(connection)
-  }
-
-  if (resolved.length === 0) {
-    errors.push('至少需要一个可解析的 Destination Connection')
-  }
-  return resolved
-}
-
-function resolveDestination(
-  settings: AppSettings,
-  profile: UploadProfile,
-  connectionId: string
-): ResolvedDestination | null {
-  const normalizedId = connectionId.trim().toLowerCase()
-  const explicitConnection = profile.cloudConnections?.find((connection) =>
-    connection.id.trim().toLowerCase() === normalizedId
-  )
-  const provider =
-    explicitConnection?.provider ||
-    providerForConnectionId(normalizedId) ||
-    providerForConnectionAlias(normalizedId) ||
-    providerForConnectionType(explicitConnection?.type)
-  if (!provider) return null
-
-  const config = explicitConnection?.config || {}
-  const prefix =
-    typeof config.prefix === 'string'
-      ? config.prefix
-      : provider === 'aliyun'
-        ? settings.oss.prefix
-        : settings.tencentS3.prefix
-
-  return {
-    connectionId,
-    provider,
-    prefix: prefix || ''
+  try {
+    const resolved = resolveRuleDestinations(rule, settings.connections)
+    return resolved.map((destination) => ({
+      connectionId: destination.connectionId,
+      prefix: destination.prefix
+    }))
+  } catch (error) {
+    errors.push(formatError(error))
+    return []
   }
 }
 
-function providerForConnectionAlias(connectionId: string): CloudProvider | null {
-  if (connectionId === 'aliyun-prod') return 'aliyun'
-  if (connectionId === 's3' || connectionId === 's3-compatible') return 'tencent'
-  return null
-}
-
-function providerForConnectionType(type: string | undefined): CloudProvider | null {
-  if (type === 'aliyun-oss') return 'aliyun'
-  if (type === 's3') return 'tencent'
-  return null
-}
-
-function validateFilterRegex(profile: UploadProfile, errors: string[]): void {
-  for (const pattern of profile.filter.regex) {
+function validateFilterRegex(rule: UploadRule, errors: string[]): void {
+  for (const pattern of rule.filter.regex) {
     try {
       new RegExp(pattern)
     } catch (error) {
@@ -325,11 +267,11 @@ function validateFilterRegex(profile: UploadProfile, errors: string[]): void {
 
 async function sampleTaskFiles(
   folderPath: string,
-  profile: UploadProfile,
+  rule: UploadRule,
   sampleLimit: number
 ): Promise<ScannedFile[]> {
   const files: ScannedFile[] = []
-  const filter = new FileFilterService(profile.filter)
+  const filter = new FileFilterService(rule.filter)
   for await (const batch of filter.scanFolderBatches(folderPath, sampleLimit)) {
     for (const file of batch) {
       files.push(file)
@@ -377,7 +319,7 @@ function normalizeSampleLimit(value: number | undefined): number {
 }
 
 function buildResult(
-  profile: UploadProfile,
+  rule: UploadRule,
   sourceRoot: string,
   errors: string[],
   warnings: string[],
@@ -391,8 +333,8 @@ function buildResult(
 ): UploadRuleDryRunResult {
   return {
     ok: errors.length === 0,
-    ruleId: profile.id,
-    ruleName: profile.name,
+    ruleId: rule.id,
+    ruleName: rule.name,
     sourceRoot,
     totals: {
       groups: groups.length,

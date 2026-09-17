@@ -7,12 +7,12 @@ import {
 } from '@aws-sdk/client-s3'
 import { Upload } from '@aws-sdk/lib-storage'
 import { NodeHttpHandler } from '@smithy/node-http-handler'
-import type { AppSettings } from '@shared/types'
+import type { S3ConnectionConfig } from '@shared/types'
 import type { CloudTaskUploader } from './cloud-upload.types'
 
 export class TencentS3UploadService {
   createTaskUploader(
-    config: AppSettings['tencentS3'],
+    config: S3ConnectionConfig,
     multipartThreshold = 100 * 1024 * 1024
   ): CloudTaskUploader {
     const client = this.createClient(config)
@@ -117,7 +117,7 @@ export class TencentS3UploadService {
   }
 
   async testConnection(
-    config: AppSettings['tencentS3']
+    config: S3ConnectionConfig
   ): Promise<{ ok: boolean; error?: string }> {
     const validationError = this.validateConfig(config)
     if (validationError) return { ok: false, error: validationError }
@@ -138,7 +138,7 @@ export class TencentS3UploadService {
     }
   }
 
-  validateConfig(config: AppSettings['tencentS3']): string | null {
+  validateConfig(config: S3ConnectionConfig): string | null {
     if (!config.endpoint.trim()) return 'Endpoint 不能为空'
     if (!config.region.trim()) return 'Region 不能为空'
     if (!config.bucket.trim()) return 'Bucket 不能为空'
@@ -148,7 +148,7 @@ export class TencentS3UploadService {
   }
 
   private createClient(
-    config: AppSettings['tencentS3'],
+    config: S3ConnectionConfig,
     requestTimeout = 300000
   ): S3Client {
     const requestHandler = new NodeHttpHandler({
@@ -163,7 +163,7 @@ export class TencentS3UploadService {
     return new S3Client({
       endpoint: config.endpoint,
       region: config.region,
-      forcePathStyle: true,
+      forcePathStyle: config.forcePathStyle ?? true,
       credentials: {
         accessKeyId: config.accessKeyId,
         secretAccessKey: config.accessKeySecret

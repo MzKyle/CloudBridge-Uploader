@@ -1,10 +1,11 @@
 import { BrowserWindow, dialog, ipcMain } from 'electron'
 import { existsSync } from 'fs'
 import { statfs } from 'fs/promises'
-import { basename, dirname, normalize } from 'path'
+import { basename, normalize } from 'path'
 import log from 'electron-log'
 import { IPC } from '@shared/ipc-channels'
 import type {
+  AliyunOSSConnectionConfig,
   AppSettings,
   CloudProvider,
   ConnectionTestInput,
@@ -12,21 +13,21 @@ import type {
   DiskUsageInfo,
   HistoryQuery,
   OSSListQuery,
+  S3ConnectionConfig,
   TaskListQuery,
+  UploadPathPreview,
   UploadRuleDryRunInput,
   UploadQueueStartInput,
   UploadQueueStopInput
 } from '@shared/types'
 import {
-  buildObjectKeyVariables,
-  extractProfilePathVariables,
-  getProfileById,
-  renderObjectKey,
-  resolveProfileUploadSnapshot,
-  validateObjectKeyTemplate,
-  validateObjectKeyValue,
-  type UploadPathPreview
-} from '@shared/upload-profile'
+  getRuleById,
+  normalizeCloudConnection,
+  resolveRuleDestinations,
+  resolveRuleUploadSnapshot
+} from '@shared/upload-rule'
+import { renderPathMapping } from '@shared/path-mapping'
+import { joinOssPath } from '@shared/day-folder'
 import { getDayFolderRepo } from '../db/day-folder.repo'
 import { getHistoryRepo } from '../db/history.repo'
 import { getSettingsRepo } from '../db/settings.repo'
@@ -67,35 +68,34 @@ export function registerAllIpc(): void {
     }
   })
 
-  ipcMain.handle(IPC.TASK_ADD_FOLDER, (_event, args: { folderPath: string; profileId?: string }) => {
+  ipcMain.handle(IPC.TASK_ADD_FOLDER, (_event, args: { folderPath: string; ruleId?: string }) => {
     const taskRepo = getTaskRepo()
     const settings = getSettingsRepo().getAll()
-    const profile = getProfileById(settings, args.profileId)
-    const variables = extractProfilePathVariables(
-      profile,
-      args.folderPath,
-      dirname(args.folderPath)
-    )
-    const snapshot = resolveProfileUploadSnapshot(profile, {
-      sourcePath: args.folderPath,
-      variables
-    })
+    const rule = getRuleById(settings, args.ruleId)
+    const snapshot = resolveRuleUploadSnapshot(rule, settings.connections)
     const folderName = basename(args.folderPath)
     const task = taskRepo.create({
       folderPath: args.folderPath,
       folderName,
-      ossPrefix: snapshot.prefixes.aliyun,
-      uploadTargetMode: snapshot.mode,
-      destinationPrefixes: snapshot.prefixes,
-      destinationUploadRelativePaths: snapshot.uploadRelativePaths,
-      destinationPathModes: snapshot.pathModes,
-      destinationObjectKeyTemplates: snapshot.objectKeyTemplates,
-      uploadRelativePath: snapshot.uploadRelativePath,
+      ossPrefix: snapshot.destinations.find((destination) =>
+        destination.legacyProvider === 'aliyun'
+      )?.prefix || '',
+      legacyCloudMode: snapshot.legacyCloudMode,
+      destinations: snapshot.destinations.map((destination) => ({
+        provider: destination.legacyProvider,
+        connectionId: destination.connectionId,
+        connectionName: destination.connectionName,
+        prefix: destination.prefix,
+        uploadRelativePath: folderName,
+        pathMode: 'target-root',
+        objectKeyTemplate: null
+      })),
+      uploadRelativePath: folderName,
       sourceType: 'manual',
-      profileId: snapshot.profileId,
-      profileName: snapshot.profileName,
-      profileSnapshot: snapshot.profileSnapshot,
-      groupVariables: variables
+      ruleId: snapshot.ruleId,
+      ruleName: snapshot.ruleName,
+      ruleSnapshot: snapshot.ruleSnapshot,
+      groupVariables: {}
     })
     getScannerService().queueReconcileTask(task)
     return getTaskRepo().getById(task.id)
@@ -208,26 +208,26 @@ export function registerAllIpc(): void {
     return { ok: true }
   })
 
-  ipcMain.handle(IPC.SETTINGS_TEST_OSS, async (_event, config: AppSettings['oss']) => {
+  ipcMain.handle(IPC.SETTINGS_TEST_OSS, async (_event, config: AliyunOSSConnectionConfig) => {
     return getOSSUploadService().testConnection(config)
   })
 
-  ipcMain.handle(IPC.SETTINGS_TEST_TENCENT_S3, async (_event, config: AppSettings['tencentS3']) => {
+  ipcMain.handle(IPC.SETTINGS_TEST_TENCENT_S3, async (_event, config: S3ConnectionConfig) => {
     return getTencentS3UploadService().testConnection(config)
   })
 
   ipcMain.handle(IPC.CONNECTION_TEST, async (_event, input: ConnectionTestInput) => {
-    const settings = getSettingsRepo().getAll()
-    if (input.type === 'aliyun-oss') {
-      return getOSSUploadService().testConnection({
-        ...settings.oss,
-        ...input.config
-      })
-    }
-    return getTencentS3UploadService().testConnection({
-      ...settings.tencentS3,
-      ...input.config
+    const connection = normalizeCloudConnection({
+      id: input.connectionId,
+      name: input.connectionId,
+      type: input.type,
+      config: input.config
     })
+    if (!connection) throw new Error('云端连接配置无效')
+    if (input.type === 'aliyun-oss') {
+      return getOSSUploadService().testConnection(connection.config as AliyunOSSConnectionConfig)
+    }
+    return getTencentS3UploadService().testConnection(connection.config as S3ConnectionConfig)
   })
 
   ipcMain.handle(IPC.UPLOAD_RULE_DRY_RUN, (_event, input: UploadRuleDryRunInput) => {
@@ -237,82 +237,46 @@ export function registerAllIpc(): void {
   ipcMain.handle(
     IPC.UPLOAD_PATH_PREVIEW,
     (_event, args: {
-      profileId?: string
+      ruleId?: string
       sourcePath: string
-      provider?: CloudProvider
       sampleFiles?: string[]
     }): UploadPathPreview => {
       const settings = getSettingsRepo().getAll()
-      const profile = getProfileById(settings, args.profileId)
-      const folderName = basename(args.sourcePath)
-      const variables = extractProfilePathVariables(
-        profile,
-        args.sourcePath,
-        dirname(args.sourcePath)
-      )
-      const context = {
-        sourcePath: args.sourcePath,
-        basePath: dirname(args.sourcePath),
-        variables
-      }
-      const requestedProviders = args.provider ? [args.provider] : undefined
-      const snapshot = resolveProfileUploadSnapshot(profile, context, requestedProviders)
+      const rule = getRuleById(settings, args.ruleId)
+      const destinations = resolveRuleDestinations(rule, settings.connections)
+      const variables = { folder: basename(args.sourcePath) }
       const sampleFiles = (args.sampleFiles?.length
         ? args.sampleFiles
         : ['camera/0001.jpg', 'data/sample.csv']
       ).slice(0, 20)
 
       return {
-        profileId: profile.id,
-        profileName: profile.name,
+        ruleId: rule.id,
+        ruleName: rule.name,
         sourcePath: args.sourcePath,
-        providers: Object.keys(snapshot.pathModes || {}).map((providerKey) => {
-          const provider = providerKey as CloudProvider
-          const pathMode = snapshot.pathModes?.[provider] || 'target-root'
-          const objectKeyTemplate = snapshot.objectKeyTemplates?.[provider] ?? null
-          const errors = objectKeyTemplate
-            ? [...validateObjectKeyTemplate(objectKeyTemplate)]
-            : []
+        destinations: destinations.map((destination) => {
+          const errors: string[] = []
           const keys: string[] = []
           for (const relativePath of sampleFiles) {
             try {
-              const key = renderObjectKey(
+              const mappedPath = renderPathMapping(
+                rule.pathMapping,
                 {
-                  provider,
-                  prefix: snapshot.prefixes[provider],
-                  uploadRelativePath: snapshot.uploadRelativePaths[provider] ?? '',
-                  pathMode,
-                  objectKeyTemplate
-                },
-                {
-                  ...context,
-                  profileId: profile.id,
-                  profileName: profile.name,
-                  folderName,
+                  sourcePath: args.sourcePath,
+                  variables,
                   relativePath
                 }
               )
-              const valueErrors = validateObjectKeyValue(key)
-              if (valueErrors.length > 0) errors.push(...valueErrors)
-              keys.push(key)
+              keys.push(joinOssPath(destination.prefix, mappedPath))
             } catch (error) {
               errors.push(error instanceof Error ? error.message : String(error))
             }
           }
           const duplicateKeys = keys.filter((key, index) => keys.indexOf(key) !== index)
           return {
-            provider,
-            prefix: snapshot.prefixes[provider],
-            uploadRelativePath: snapshot.uploadRelativePaths[provider] ?? '',
-            pathMode,
-            objectKeyTemplate,
-            variables: buildObjectKeyVariables(provider, {
-              ...context,
-              profileId: profile.id,
-              profileName: profile.name,
-              folderName,
-              relativePath: sampleFiles[0] || ''
-            }),
+            connectionId: destination.connectionId,
+            prefix: destination.prefix,
+            variables,
             keys,
             errors: Array.from(new Set(errors)),
             warnings: duplicateKeys.length > 0
@@ -365,8 +329,8 @@ export function registerAllIpc(): void {
   ipcMain.handle(IPC.DISK_USAGE, async () => {
     const settings = getSettingsRepo().getAll()
     const paths = new Set<string>()
-    for (const profile of settings.profiles) {
-      for (const root of profile.source.roots) {
+    for (const rule of settings.rules) {
+      for (const root of rule.source.roots) {
         paths.add(normalize(root).replace(/[\\/]+$/, ''))
       }
     }

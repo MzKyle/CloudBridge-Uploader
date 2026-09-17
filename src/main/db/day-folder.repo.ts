@@ -15,7 +15,6 @@ import {
   mapLegacyDayFolderStatus,
   uploadGroupStatusToDayFolderStatus
 } from '@shared/upload-group'
-import { DEFAULT_COMPLETION_POLICY } from '@shared/upload-profile'
 import { getDb } from './database'
 import { getTaskRepo } from './task.repo'
 import { getSettingsRepo } from './settings.repo'
@@ -45,9 +44,11 @@ function safeParseVariables(
   }
 }
 
-function safeParseProfile(value: string): Task['profileSnapshot'] {
+const DEFAULT_COMPLETION_POLICY: CompletionPolicy = { mode: 'rollover' }
+
+function safeParseRule(value: string): Task['ruleSnapshot'] {
   try {
-    return JSON.parse(value) as NonNullable<Task['profileSnapshot']>
+    return JSON.parse(value) as NonNullable<Task['ruleSnapshot']>
   } catch {
     return null
   }
@@ -87,7 +88,7 @@ function rowToRecord(row: Record<string, unknown>): DayFolderRecord {
     folderName: row.folder_name as string,
     date: row.date_value as string,
     status: legacyStatus,
-    profileId: (row.profile_id as string) || null,
+    ruleId: (row.profile_id as string) || null,
     groupKey: (row.group_key as string) || (row.date_value as string),
     variables,
     uploadGroupStatus,
@@ -115,11 +116,11 @@ export class DayFolderRepo {
     folderPath: string,
     groupKey: string,
     variables: PathVariables = { date: groupKey },
-    profileId?: string | null
+    ruleId?: string | null
   ): DayFolderSummary {
     const existing = this.getRecordByPath(folderPath)
     if (existing) {
-      this.updateGroupMetadata(existing.id, groupKey, variables, profileId ?? existing.profileId)
+      this.updateGroupMetadata(existing.id, groupKey, variables, ruleId ?? existing.ruleId)
       return this.getById(existing.id) || existing
     }
 
@@ -140,7 +141,7 @@ export class DayFolderRepo {
       groupKey,
       now,
       now,
-      profileId || null,
+      ruleId || null,
       groupKey,
       JSON.stringify(variables),
       now,
@@ -221,7 +222,7 @@ export class DayFolderRepo {
     id: string,
     groupKey: string,
     variables: PathVariables,
-    profileId?: string | null
+    ruleId?: string | null
   ): void {
     getDb().prepare(
       `UPDATE day_folders
@@ -232,7 +233,7 @@ export class DayFolderRepo {
     ).run(
       groupKey,
       JSON.stringify(variables),
-      profileId || null,
+      ruleId || null,
       new Date().toISOString(),
       id
     )
@@ -546,8 +547,8 @@ export class DayFolderRepo {
     record: DayFolderRecord,
     childTasks: Array<Task | null>
   ): CompletionPolicy {
-    const taskPolicy = childTasks.find((task) => task?.profileSnapshot?.completion)
-      ?.profileSnapshot?.completion
+    const taskPolicy = childTasks.find((task) => task?.ruleSnapshot?.completion)
+      ?.ruleSnapshot?.completion
     if (taskPolicy) return taskPolicy
     const row = getDb().prepare(
       `SELECT profile_snapshot_json
@@ -556,13 +557,13 @@ export class DayFolderRepo {
        ORDER BY created_at ASC
        LIMIT 1`
     ).get(record.id) as { profile_snapshot_json: string } | undefined
-    const profile = row ? safeParseProfile(row.profile_snapshot_json) : null
-    if (profile?.completion) return profile.completion
-    if (record.profileId) {
-      const currentProfile = getSettingsRepo()
+    const rule = row ? safeParseRule(row.profile_snapshot_json) : null
+    if (rule?.completion) return rule.completion
+    if (record.ruleId) {
+      const currentRule = getSettingsRepo()
         .getAll()
-        .profiles.find((item) => item.id === record.profileId)
-      if (currentProfile?.completion) return currentProfile.completion
+        .rules.find((item) => item.id === record.ruleId)
+      if (currentRule?.completion) return currentRule.completion
     }
     return DEFAULT_COMPLETION_POLICY
   }

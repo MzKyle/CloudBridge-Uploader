@@ -1,5 +1,5 @@
 import { createReadStream } from 'fs'
-import type { AppSettings } from '@shared/types'
+import type { AliyunOSSConnectionConfig } from '@shared/types'
 import type { CloudTaskUploader } from './cloud-upload.types'
 
 // ali-oss 类型
@@ -19,12 +19,12 @@ interface OSSClient {
 
 export class OSSUploadService {
   private client: OSSClient | null = null
-  private config: AppSettings['oss'] | null = null
+  private config: AliyunOSSConnectionConfig | null = null
   private multipartThreshold: number = 100 * 1024 * 1024 // 100MB
   private readonly minPartSize: number = 1024 * 1024 // 1MB
   private readonly maxMultipartParts: number = 10000
 
-  configure(config: AppSettings['oss'], multipartThreshold?: number): void {
+  configure(config: AliyunOSSConnectionConfig, multipartThreshold?: number): void {
     this.config = config
     if (multipartThreshold) this.multipartThreshold = multipartThreshold
     this.client = null // 重新配置时重建客户端
@@ -64,7 +64,7 @@ export class OSSUploadService {
   }
 
   async createTaskUploader(
-    config: AppSettings['oss'],
+    config: AliyunOSSConnectionConfig,
     multipartThreshold?: number
   ): Promise<CloudTaskUploader> {
     this.configure(config, multipartThreshold)
@@ -203,7 +203,7 @@ export class OSSUploadService {
     return ossKey
   }
 
-  async testConnection(config: AppSettings['oss']): Promise<{ ok: boolean; error?: string }> {
+  async testConnection(config: AliyunOSSConnectionConfig): Promise<{ ok: boolean; error?: string }> {
     const endpoint = config.endpoint.trim()
     const region = config.region.trim()
     const bucket = config.bucket.trim()

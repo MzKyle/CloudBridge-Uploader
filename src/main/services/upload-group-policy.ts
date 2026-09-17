@@ -1,18 +1,18 @@
-import { getProfileSourceDirectories } from '@shared/scan-config'
+import { getRuleSourceDirectories } from '@shared/scan-config'
 import type {
   CleanupPolicy,
   DayFolderSummary,
   Task,
-  UploadProfile
+  UploadRule
 } from '@shared/types'
-import { DEFAULT_CLEANUP_POLICY } from '@shared/upload-profile'
+import { DEFAULT_CLEANUP_POLICY } from '@shared/upload-rule'
 import { getSettingsRepo } from '../db/settings.repo'
 import { getTaskRepo } from '../db/task.repo'
 
 export interface ResolvedCleanupPolicyForGroup {
   policy: CleanupPolicy
   sourceRoots: string[]
-  profile: UploadProfile | null
+  rule: UploadRule | null
 }
 
 export function resolveCleanupPolicyForGroup(
@@ -20,31 +20,31 @@ export function resolveCleanupPolicyForGroup(
   tasks: Task[] = getTaskRepo().listByDayFolder(group.id)
 ): ResolvedCleanupPolicyForGroup {
   const settings = getSettingsRepo().getAll()
-  const snapshotProfile = findSnapshotProfile(group, tasks)
-  const currentProfile = group.profileId
-    ? settings.profiles.find((profile) => profile.id === group.profileId) || null
+  const snapshotRule = findSnapshotRule(group, tasks)
+  const currentRule = group.ruleId
+    ? settings.rules.find((rule) => rule.id === group.ruleId) || null
     : null
-  const profile = snapshotProfile || currentProfile
+  const rule = snapshotRule || currentRule
   const policy = normalizeCleanupPolicy(
-    profile?.cleanup || settings.cleanup,
+    rule?.cleanup || settings.cleanup,
     DEFAULT_CLEANUP_POLICY
   )
-  const snapshotSourceRoots = snapshotProfile
-    ? getProfileSourceDirectories(snapshotProfile)
+  const snapshotSourceRoots = snapshotRule
+    ? getRuleSourceDirectories(snapshotRule)
     : []
-  const currentSourceRoots = currentProfile
-    ? getProfileSourceDirectories(currentProfile)
+  const currentSourceRoots = currentRule
+    ? getRuleSourceDirectories(currentRule)
     : []
   const sourceRoots = firstNonEmpty(
     snapshotSourceRoots,
     currentSourceRoots,
-    settings.scan.directories
+    settings.rules.flatMap(getRuleSourceDirectories)
   )
 
   return {
     policy,
     sourceRoots,
-    profile
+    rule
   }
 }
 
@@ -52,21 +52,21 @@ function firstNonEmpty(...values: string[][]): string[] {
   return values.find((value) => value.length > 0) || []
 }
 
-function findSnapshotProfile(
+function findSnapshotRule(
   group: DayFolderSummary,
   tasks: Task[]
-): UploadProfile | null {
+): UploadRule | null {
   const orderedTasks = [...tasks].sort((a, b) =>
     Date.parse(a.createdAt) - Date.parse(b.createdAt)
   )
   return (
     orderedTasks.find((task) =>
-      task.profileSnapshot?.cleanup &&
-      (!group.profileId ||
-        task.profileSnapshot.id === group.profileId ||
-        task.profileId === group.profileId)
-    )?.profileSnapshot ||
-    orderedTasks.find((task) => task.profileSnapshot?.cleanup)?.profileSnapshot ||
+      task.ruleSnapshot?.cleanup &&
+      (!group.ruleId ||
+        task.ruleSnapshot.id === group.ruleId ||
+        task.ruleId === group.ruleId)
+    )?.ruleSnapshot ||
+    orderedTasks.find((task) => task.ruleSnapshot?.cleanup)?.ruleSnapshot ||
     null
   )
 }

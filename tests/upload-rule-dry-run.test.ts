@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DEFAULT_SETTINGS } from '../src/shared/constants'
 import { dryRunUploadRule } from '../src/main/services/upload-rule-dry-run.service'
-import type { AppSettings, UploadProfile } from '../src/shared/types'
+import type { AppSettings, UploadRule } from '../src/shared/types'
 
 test('dry run validates date/session upload rules', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dry-run-date-session-'))
@@ -99,6 +99,87 @@ test('dry run supports ordinary flat source roots without discovery patterns', a
   }
 })
 
+test('dry run reports missing rule destinations before scanning files', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dry-run-missing-connection-'))
+  try {
+    const rule = makeProfile(root, {
+      destinations: [
+        {
+          connectionId: 'missing-connection'
+        }
+      ]
+    })
+    const result = await dryRunUploadRule(
+      { rule, sourceRoot: root, sampleLimit: 10 },
+      makeSettings(rule)
+    )
+
+    assert.equal(result.ok, false)
+    assert.match(result.errors.join('\n'), /Destination Connection 不存在/)
+    assert.equal(result.totals.filesScanned, 0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('dry run renders object keys for multiple connection destinations', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dry-run-multiple-connections-'))
+  try {
+    mkdirSync(join(root, 'Photos', 'trip'), { recursive: true })
+    writeFileSync(join(root, 'Photos', 'trip', 'frame.jpg'), 'image')
+
+    const rule = makeProfile(join(root, 'Photos'), {
+      destinations: [
+        {
+          connectionId: 'aliyun-prod'
+        },
+        {
+          connectionId: 's3-compatible'
+        }
+      ],
+      discovery: {
+        recursive: false
+      },
+      pathMapping: {
+        mode: 'keep-relative'
+      }
+    })
+    const settings = makeSettings(rule)
+    settings.connections = settings.connections.map((connection) =>
+      connection.id === 's3-compatible'
+        ? {
+            ...connection,
+            config: {
+              ...connection.config,
+              prefix: 'mirror'
+            }
+          }
+        : connection
+    )
+    const result = await dryRunUploadRule(
+      { rule, sourceRoot: join(root, 'Photos'), sampleLimit: 10 },
+      settings
+    )
+
+    assert.equal(result.ok, true)
+    assert.deepEqual(
+      result.groups[0].tasks[0].sampleFiles[0].objectKeys,
+      [
+        {
+          connectionId: 'aliyun-prod',
+          key: 'prod/trip/frame.jpg'
+        },
+        {
+          connectionId: 's3-compatible',
+          key: 'mirror/trip/frame.jpg'
+        }
+      ]
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('dry run rejects unsafe templates and duplicate object keys', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dry-run-errors-'))
   try {
@@ -152,8 +233,8 @@ test('dry run rejects unsafe templates and duplicate object keys', async () => {
 
 function makeProfile(
   sourceRoot: string,
-  overrides: Partial<UploadProfile>
-): UploadProfile {
+  overrides: Partial<UploadRule>
+): UploadRule {
   return {
     id: 'test-rule',
     name: 'Test Rule',
@@ -163,8 +244,7 @@ function makeProfile(
     },
     destinations: [
       {
-        connectionId: 'aliyun-prod',
-        required: true
+        connectionId: 'aliyun-prod'
       }
     ],
     pathMapping: {
@@ -179,56 +259,32 @@ function makeProfile(
       retentionDays: 7,
       onlyAfterSealed: true
     },
-    cloudConnections: [
-      {
-        id: 'aliyun-prod',
-        name: 'Aliyun Production',
-        type: 'aliyun-oss',
-        provider: 'aliyun',
-        config: {
-          prefix: 'prod'
-        }
-      }
-    ],
-    targetMode: 'aliyun',
     filter: {
       whitelist: [],
       blacklist: [],
       regex: [],
       suffixes: []
     },
-    scan: {
-      providerDirectories: {
-        aliyun: [sourceRoot],
-        tencent: []
-      }
-    },
-    providers: {
-      aliyun: {
-        prefix: 'prod',
-        pathMode: 'target-root',
-        pathSegmentCount: 2,
-        objectKeyTemplate: '{relativePath}'
-      },
-      tencent: {
-        prefix: '',
-        pathMode: 'target-root',
-        pathSegmentCount: 2,
-        objectKeyTemplate: '{relativePath}'
-      }
-    },
     ...overrides
   }
 }
 
-function makeSettings(profile: UploadProfile): AppSettings {
+function makeSettings(rule: UploadRule): AppSettings {
+  const settings = structuredClone(DEFAULT_SETTINGS) as AppSettings
   return {
-    ...structuredClone(DEFAULT_SETTINGS),
-    oss: {
-      ...structuredClone(DEFAULT_SETTINGS.oss),
-      prefix: 'prod'
-    },
-    profiles: [profile],
-    activeProfileId: profile.id
-  } as AppSettings
+    ...settings,
+    rules: [rule],
+    activeRuleId: rule.id,
+    connections: settings.connections.map((connection) =>
+      connection.id === 'aliyun-prod'
+        ? {
+            ...connection,
+            config: {
+              ...connection.config,
+              prefix: 'prod'
+            }
+          }
+        : connection
+    )
+  }
 }

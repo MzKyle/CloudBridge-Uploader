@@ -20,7 +20,7 @@ import type {
   DayFolderSummary,
   HistoryItem,
 } from "@shared/types";
-import { providersForProfile } from "@shared/cloud-upload";
+import { legacyProviderForConnection } from "@shared/cloud-upload";
 import { DayFolderCard } from "@/components/DayFolderCard";
 
 type HistoryConfirmAction =
@@ -62,10 +62,15 @@ export default function History() {
   useEffect(() => {
     fetchSettings()
       .then((settings) => {
-        const activeProfile =
-          settings.profiles.find((profile) => profile.id === settings.activeProfileId) ||
-          settings.profiles[0];
-        const providers = activeProfile ? providersForProfile(activeProfile) : [];
+        const activeRule =
+          settings.rules.find((rule) => rule.id === settings.activeRuleId) ||
+          settings.rules[0];
+        const providers = activeRule
+          ? activeRule.destinations
+            .map((destination) => settings.connections.find((connection) => connection.id === destination.connectionId))
+            .filter(Boolean)
+            .map((connection) => legacyProviderForConnection(connection!))
+          : [];
         setProvider(providers.includes("tencent") && !providers.includes("aliyun") ? "tencent" : "aliyun");
       })
       .catch(() => {})

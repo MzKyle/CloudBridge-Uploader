@@ -116,6 +116,8 @@ export function runMigrations(db: Database.Database): void {
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL,
       provider TEXT NOT NULL,
+      connection_id TEXT,
+      connection_name TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       prefix TEXT NOT NULL DEFAULT '',
       upload_relative_path TEXT NOT NULL DEFAULT '',
@@ -138,6 +140,7 @@ export function runMigrations(db: Database.Database): void {
       task_file_id TEXT NOT NULL,
       task_destination_id TEXT NOT NULL,
       provider TEXT NOT NULL,
+      connection_id TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       object_key TEXT,
       planned_object_key TEXT,
@@ -218,12 +221,53 @@ export function runMigrations(db: Database.Database): void {
     db.exec(`ALTER TABLE task_destinations ADD COLUMN object_key_template TEXT`)
     log.info('迁移: task_destinations 表添加 object_key_template 列')
   }
+  if (!taskDestinationColumns.some((c) => c.name === 'connection_id')) {
+    db.exec(`ALTER TABLE task_destinations ADD COLUMN connection_id TEXT`)
+    log.info('迁移: task_destinations 表添加 connection_id 列')
+  }
+  if (!taskDestinationColumns.some((c) => c.name === 'connection_name')) {
+    db.exec(`ALTER TABLE task_destinations ADD COLUMN connection_name TEXT`)
+    log.info('迁移: task_destinations 表添加 connection_name 列')
+  }
 
   const taskFileDestinationColumns = db.pragma('table_info(task_file_destinations)') as Array<{ name: string }>
   if (!taskFileDestinationColumns.some((c) => c.name === 'planned_object_key')) {
     db.exec(`ALTER TABLE task_file_destinations ADD COLUMN planned_object_key TEXT`)
     log.info('迁移: task_file_destinations 表添加 planned_object_key 列')
   }
+  if (!taskFileDestinationColumns.some((c) => c.name === 'connection_id')) {
+    db.exec(`ALTER TABLE task_file_destinations ADD COLUMN connection_id TEXT`)
+    log.info('迁移: task_file_destinations 表添加 connection_id 列')
+  }
+  db.exec(`
+    UPDATE task_destinations
+    SET connection_id = CASE
+          WHEN connection_id IS NOT NULL AND connection_id != '' THEN connection_id
+          WHEN provider = 'aliyun' THEN 'aliyun-prod'
+          WHEN provider = 'tencent' THEN 's3-compatible'
+          ELSE provider
+        END,
+        connection_name = CASE
+          WHEN connection_name IS NOT NULL AND connection_name != '' THEN connection_name
+          WHEN provider = 'aliyun' THEN '阿里云 OSS'
+          WHEN provider = 'tencent' THEN 'S3 兼容存储'
+          ELSE provider
+        END
+    WHERE connection_id IS NULL OR connection_id = ''
+  `)
+  db.exec(`
+    UPDATE task_file_destinations
+    SET connection_id = COALESCE((
+      SELECT connection_id
+      FROM task_destinations
+      WHERE task_destinations.id = task_file_destinations.task_destination_id
+    ), CASE
+      WHEN provider = 'aliyun' THEN 'aliyun-prod'
+      WHEN provider = 'tencent' THEN 's3-compatible'
+      ELSE provider
+    END)
+    WHERE connection_id IS NULL OR connection_id = ''
+  `)
 
   const dayFolderColumns = db.pragma('table_info(day_folders)') as Array<{ name: string }>
   if (!dayFolderColumns.some((c) => c.name === 'ignored')) {
