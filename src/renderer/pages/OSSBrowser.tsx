@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowDownAZ, ArrowUpAZ, CornerUpLeft, Eye, File, FileImage, Folder, Plug, RefreshCw, Settings } from 'lucide-react'
+import { ArrowDownAZ, ArrowUpAZ, CornerUpLeft, Eye, File, FileImage, Folder, RefreshCw, Settings } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -114,16 +114,10 @@ export default function OSSBrowser() {
         <div className="text-sm border border-destructive/40 rounded-md px-3 py-3 bg-destructive/10 space-y-3">
           <div className="text-destructive break-all">{state.error}</div>
           <div className="flex flex-wrap gap-2">
-            {state.error.includes('未启用') && (
-              <Button size="sm" variant="outline" onClick={() => navigate('/plugins')}>
-                <Plug className="h-4 w-4 mr-1" />
-                项目能力
-              </Button>
-            )}
             {state.error.includes('配置不完整') && (
-              <Button size="sm" variant="outline" onClick={() => navigate('/settings')}>
+              <Button size="sm" variant="outline" onClick={() => navigate('/connections')}>
                 <Settings className="h-4 w-4 mr-1" />
-                设置
+                云端连接
               </Button>
             )}
           </div>

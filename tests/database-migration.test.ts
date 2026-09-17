@@ -45,23 +45,6 @@ function createLegacyDatabase(): Database.Database {
       FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
     );
 
-    CREATE TABLE ssh_machines (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      host TEXT NOT NULL,
-      port INTEGER NOT NULL DEFAULT 22,
-      username TEXT NOT NULL,
-      auth_type TEXT NOT NULL DEFAULT 'key',
-      private_key_path TEXT,
-      encrypted_password TEXT,
-      remote_dir TEXT NOT NULL,
-      local_dir TEXT NOT NULL,
-      bw_limit INTEGER NOT NULL DEFAULT 5000,
-      cpu_nice INTEGER NOT NULL DEFAULT 19,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      last_sync_at TEXT,
-      created_at TEXT NOT NULL
-    );
   `)
   return db
 }
@@ -74,8 +57,6 @@ test('migration adds profile and object key template columns', () => {
     .map((column) => column.name)
   const destinationColumns = (db.pragma('table_info(task_destinations)') as Array<{ name: string }>)
     .map((column) => column.name)
-  const sshColumns = (db.pragma('table_info(ssh_machines)') as Array<{ name: string }>)
-    .map((column) => column.name)
   const dayFolderColumns = (db.pragma('table_info(day_folders)') as Array<{ name: string }>)
     .map((column) => column.name)
 
@@ -84,7 +65,6 @@ test('migration adds profile and object key template columns', () => {
   assert.ok(taskColumns.includes('profile_snapshot_json'))
   assert.ok(destinationColumns.includes('path_mode'))
   assert.ok(destinationColumns.includes('object_key_template'))
-  assert.ok(sshColumns.includes('profile_id'))
   assert.ok(dayFolderColumns.includes('last_content_activity_at'))
 })
 
@@ -256,55 +236,6 @@ test('legacy migration skips completed file details and preserves unfinished pro
       upload_relative_path: '2026-03-14/failed'
     }
   ])
-
-  db.close()
-})
-
-test('legacy rsync tasks recover the date and child package from the remote path', () => {
-  const db = createLegacyDatabase()
-  const now = new Date().toISOString()
-  db.prepare(`
-    INSERT INTO ssh_machines (
-      id, name, host, username, remote_dir, local_dir, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    'machine-1',
-    'remote-machine',
-    '127.0.0.1',
-    'tester',
-    '/remote/data/2026-03-14/17-38-09_teleop',
-    '/var/cache/current-package',
-    now
-  )
-  db.prepare(`
-    INSERT INTO tasks (
-      id, folder_path, folder_name, status, oss_prefix, source_type,
-      source_machine_id, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    'rsync-task',
-    '/var/cache/current-package',
-    'current-package',
-    'pending',
-    'upload',
-    'rsync',
-    'machine-1',
-    now,
-    now
-  )
-
-  runMigrations(db)
-
-  const task = db.prepare(
-    `SELECT t.upload_relative_path, td.upload_relative_path AS destination_upload_relative_path
-     FROM tasks t
-     INNER JOIN task_destinations td ON td.task_id = t.id
-     WHERE t.id = ?`
-  ).get('rsync-task')
-  assert.deepEqual(task, {
-    upload_relative_path: '2026-03-14/17-38-09_teleop',
-    destination_upload_relative_path: '2026-03-14/17-38-09_teleop'
-  })
 
   db.close()
 })

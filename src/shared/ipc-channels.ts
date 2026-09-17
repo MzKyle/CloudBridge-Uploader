@@ -39,51 +39,20 @@ export const IPC = {
   SCANNER_STOP: 'scanner:stop',
   SCANNER_EVENT: 'scanner:event',         // push from main
 
-  // 数采模式
-  DATA_COLLECT_LIST: 'data-collect:list',
-  DATA_COLLECT_RUN: 'data-collect:run',
-  DATA_COLLECT_RESULT: 'data-collect:result', // push from main
-
   // 设置
   SETTINGS_GET_ALL: 'settings:get-all',
   SETTINGS_SAVE: 'settings:save',
   SETTINGS_TEST_OSS: 'settings:test-oss',
   SETTINGS_TEST_TENCENT_S3: 'settings:test-tencent-s3',
   UPLOAD_PATH_PREVIEW: 'upload:path-preview',
+  UPLOAD_RULE_DRY_RUN: 'upload-rule:dry-run',
+  CONNECTION_TEST: 'connection:test',
 
-  // 项目插件
-  CAPABILITY_LIST: 'capability:list',
-  CAPABILITY_PROFILE_STATUS: 'capability:profile-status',
-  CAPABILITY_TASK_RUNS: 'capability:task-runs',
-  PLUGIN_LIST: 'plugin:list',
-  PLUGIN_PROFILE_STATUS: 'plugin:profile-status',
-  PLUGIN_TASK_RUNS: 'plugin:task-runs',
-
-  // OSS 浏览器工具插件
+  // 对象浏览
   OSS_BROWSER_LIST: 'oss-browser:list',
   OSS_BROWSER_HEAD: 'oss-browser:head',
   OSS_BROWSER_GET_IMAGE: 'oss-browser:get-image',
   OSS_BROWSER_OPEN_PREVIEW_WINDOW: 'oss-browser:open-preview-window',
-
-  // 通用转换工具
-  GENERIC_CONVERTER_STATUS: 'generic-converter:status',
-  GENERIC_CONVERTER_START: 'generic-converter:start',
-  GENERIC_CONVERTER_STOP: 'generic-converter:stop',
-  GENERIC_CONVERTER_SCAN_NOW: 'generic-converter:scan-now',
-  GENERIC_CONVERTER_EVENT: 'generic-converter:event',
-
-  // SSH / rsync
-  SSH_LIST_MACHINES: 'ssh:list-machines',
-  SSH_ADD_MACHINE: 'ssh:add-machine',
-  SSH_UPDATE_MACHINE: 'ssh:update-machine',
-  SSH_DELETE_MACHINE: 'ssh:delete-machine',
-  SSH_TEST_CONNECTION: 'ssh:test-connection',
-  RSYNC_START: 'rsync:start',
-  RSYNC_STOP: 'rsync:stop',
-  RSYNC_PROGRESS: 'rsync:progress',       // push from main
-  SFTP_START: 'sftp:start',
-  SFTP_STOP: 'sftp:stop',
-  SFTP_PROGRESS: 'sftp:progress',         // push from main
 
   // 历史
   HISTORY_LIST: 'history:list',

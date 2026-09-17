@@ -1,8 +1,6 @@
 import { extname } from 'path'
 import type { AppSettings, OSSImageResult, OSSListResult, OSSObjectHead, OSSObjectItem } from '@shared/types'
-import { EXTENSION_IDS } from '@shared/plugins'
 import { providersForProfile } from '@shared/cloud-upload'
-import { normalizeProfileExtensions } from '@shared/upload-profile'
 import { getSettingsRepo } from '../db/settings.repo'
 
 interface OSSBrowseClient {
@@ -74,12 +72,8 @@ export class OSSBrowserService {
     const profile =
       settings.profiles.find((item) => item.id === settings.activeProfileId) ||
       settings.profiles[0]
-    const extensions = normalizeProfileExtensions(profile.extensions, profile.plugins)
-    if (!extensions.enabledIds.includes(EXTENSION_IDS.OSS_BROWSER)) {
-      throw new Error('当前 Profile 未启用 OSS 浏览器插件')
-    }
     if (!providersForProfile(profile).includes('aliyun')) {
-      throw new Error('OSS 浏览器插件第一版仅支持包含阿里云目标的 Profile')
+      throw new Error('OSS 浏览器当前使用阿里云 OSS 连接，请选择包含 aliyun 连接的上传规则')
     }
     const config = {
       ...settings.oss,
@@ -92,7 +86,7 @@ export class OSSBrowserService {
     } as AppSettings['oss']
 
     if (!config.region || !config.bucket || !config.accessKeyId || !config.accessKeySecret) {
-      throw new Error('阿里云 OSS 配置不完整，请先到设置页完成配置')
+      throw new Error('阿里云 OSS 配置不完整，请先到云端连接页完成配置')
     }
 
     const newConfigKey = this.getConfigKey(config)

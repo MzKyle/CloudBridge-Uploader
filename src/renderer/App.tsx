@@ -5,26 +5,25 @@ import {
   NavLink,
   Outlet,
 } from "react-router-dom";
-import { Cloud, LayoutDashboard, Plug, Settings, Clock, Server, Circle } from "lucide-react";
+import { CloudCog, LayoutDashboard, Settings, Clock, Circle, ListChecks } from "lucide-react";
 import { ToastContainer } from "@/components/ui/toast";
 import Dashboard from "@/pages/Dashboard";
 import SettingsPage from "@/pages/Settings";
 import History from "@/pages/History";
-import SSHMachines from "@/pages/SSHMachines";
-import Plugins from "@/pages/Plugins";
+import UploadRules from "@/pages/UploadRules";
+import CloudConnections from "@/pages/CloudConnections";
 import OSSBrowser from "@/pages/OSSBrowser";
 import OSSPreviewWindow from "@/pages/OSSPreviewWindow";
 
 const navItems = [
-  { to: "/", icon: LayoutDashboard, label: "任务面板", group: "运行" },
+  { to: "/", icon: LayoutDashboard, label: "任务", group: "运行" },
+  { to: "/rules", icon: ListChecks, label: "上传规则", group: "配置" },
+  { to: "/connections", icon: CloudCog, label: "云端连接", group: "配置" },
   { to: "/history", icon: Clock, label: "历史记录", group: "运行" },
-  { to: "/oss-browser", icon: Cloud, label: "OSS 浏览", group: "工具" },
-  { to: "/ssh", icon: Server, label: "远程机器", group: "工具" },
-  { to: "/plugins", icon: Plug, label: "项目能力", group: "配置" },
   { to: "/settings", icon: Settings, label: "设置", group: "配置" },
 ];
 
-const navGroups = ["运行", "工具", "配置"];
+const navGroups = ["运行", "配置"];
 
 function MainLayout() {
   return (
@@ -37,7 +36,7 @@ function MainLayout() {
             云桥上传器
           </h1>
           <div className="mt-1 text-xs text-muted-foreground">
-            多云归档工作台
+            本地目录归档工具
           </div>
         </div>
         <div className="flex flex-1 flex-col gap-4 px-2">
@@ -93,11 +92,11 @@ export default function App() {
       <Routes>
         <Route element={<MainLayout />}>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/rules" element={<UploadRules />} />
+          <Route path="/connections" element={<CloudConnections />} />
           <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/plugins" element={<Plugins />} />
           <Route path="/oss-browser" element={<OSSBrowser />} />
           <Route path="/history" element={<History />} />
-          <Route path="/ssh" element={<SSHMachines />} />
         </Route>
         <Route path="/oss-preview" element={<OSSPreviewWindow />} />
       </Routes>

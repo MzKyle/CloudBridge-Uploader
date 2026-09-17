@@ -1250,7 +1250,8 @@ export class TaskRepo {
     const rows = db.prepare(
       `SELECT * FROM tasks
        WHERE status = 'completed'
-         AND (source_type = 'rsync' OR (source_type = 'local' AND day_folder_id IS NULL))
+         AND source_type = 'local'
+         AND day_folder_id IS NULL
          AND completed_at IS NOT NULL AND completed_at < ?
        ORDER BY completed_at ASC`
     ).all(cutoff) as Record<string, unknown>[]

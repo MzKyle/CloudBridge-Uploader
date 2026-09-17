@@ -3,6 +3,7 @@ node_modules/
 # Build outputs
 out/
 dist/
+/index-*.js
 *.AppImage
 *.deb
 *.snap
@@ -29,3 +30,6 @@ pnpm-debug.log*
 .history/
 __MACOSX/
 .DS_Store
+
+# Removed legacy pre-upload scripts
+pre_upload_logic_code/

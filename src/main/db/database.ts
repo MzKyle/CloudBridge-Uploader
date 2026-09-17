@@ -158,44 +158,6 @@ export function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_task_file_destinations_destination_id ON task_file_destinations(task_destination_id);
     CREATE INDEX IF NOT EXISTS idx_day_folders_status ON day_folders(status);
 
-    CREATE TABLE IF NOT EXISTS task_plugin_runs (
-      id TEXT PRIMARY KEY,
-      task_id TEXT NOT NULL,
-      plugin_id TEXT NOT NULL,
-      category TEXT NOT NULL,
-      status TEXT NOT NULL,
-      started_at TEXT NOT NULL,
-      completed_at TEXT,
-      error_message TEXT,
-      summary_json TEXT,
-      staging_path TEXT,
-      artifacts_json TEXT,
-      FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_task_plugin_runs_task_id ON task_plugin_runs(task_id);
-    CREATE INDEX IF NOT EXISTS idx_task_plugin_runs_plugin_status ON task_plugin_runs(plugin_id, status);
-
-    CREATE TABLE IF NOT EXISTS ssh_machines (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      host TEXT NOT NULL,
-      port INTEGER NOT NULL DEFAULT 22,
-      username TEXT NOT NULL,
-      auth_type TEXT NOT NULL DEFAULT 'key',
-      private_key_path TEXT,
-      encrypted_password TEXT,
-      remote_dir TEXT NOT NULL,
-      local_dir TEXT NOT NULL,
-      bw_limit INTEGER NOT NULL DEFAULT 5000,
-      cpu_nice INTEGER NOT NULL DEFAULT 19,
-      transfer_mode TEXT NOT NULL DEFAULT 'rsync',
-      profile_id TEXT,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      last_sync_at TEXT,
-      created_at TEXT NOT NULL
-    );
-
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
@@ -372,9 +334,6 @@ export function runMigrations(db: Database.Database): void {
       source_machine_id: string | null
       upload_relative_path: string
     }>
-    const findRemoteDirectory = db.prepare(
-      'SELECT remote_dir FROM ssh_machines WHERE id = ?'
-    )
     const updateUploadRelativePath = db.prepare(
       `UPDATE tasks
        SET upload_relative_path = ?, updated_at = ?
@@ -382,16 +341,7 @@ export function runMigrations(db: Database.Database): void {
     )
     let migratedDatePaths = 0
     for (const task of incompleteTasks) {
-      let uploadRelativePath: string | null = null
-      if (task.source_type === 'rsync' && task.source_machine_id) {
-        const machine = findRemoteDirectory.get(task.source_machine_id) as
-          | { remote_dir: string }
-          | undefined
-        uploadRelativePath = machine
-          ? deriveDateScopedUploadRelativePath(machine.remote_dir)
-          : null
-      }
-      uploadRelativePath ||= deriveDateScopedUploadRelativePath(task.folder_path)
+      const uploadRelativePath = deriveDateScopedUploadRelativePath(task.folder_path)
 
       if (
         uploadRelativePath &&
@@ -465,19 +415,6 @@ export function runMigrations(db: Database.Database): void {
       )
     }
     markDataMigrationDone(db, DATA_MIGRATION_DESTINATIONS)
-  }
-
-  // 增量迁移：为已有的 ssh_machines 表补充 transfer_mode 列
-  const columns = db.pragma('table_info(ssh_machines)') as Array<{ name: string }>
-  const hasTransferMode = columns.some((c) => c.name === 'transfer_mode')
-  if (!hasTransferMode) {
-    db.exec(`ALTER TABLE ssh_machines ADD COLUMN transfer_mode TEXT NOT NULL DEFAULT 'rsync'`)
-    log.info('迁移: ssh_machines 表添加 transfer_mode 列')
-  }
-  const sshColumnsAfterTransfer = db.pragma('table_info(ssh_machines)') as Array<{ name: string }>
-  if (!sshColumnsAfterTransfer.some((c) => c.name === 'profile_id')) {
-    db.exec(`ALTER TABLE ssh_machines ADD COLUMN profile_id TEXT`)
-    log.info('迁移: ssh_machines 表添加 profile_id 列')
   }
 }
 
@@ -553,7 +490,7 @@ export function reconcileStartupState(db: Database.Database): void {
   const monitorableTasks = db.prepare(
     `SELECT id, folder_path
      FROM tasks
-     WHERE source_type IN ('local', 'rsync')
+     WHERE source_type = 'local'
        AND status NOT IN ('completed', 'synced', 'skipped')`
   ).all() as Array<{
     id: string

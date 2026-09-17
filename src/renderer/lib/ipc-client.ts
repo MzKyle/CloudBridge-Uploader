@@ -1,24 +1,35 @@
 import { IPC } from '@shared/ipc-channels'
 import type {
-  Task, TaskStatus, AppSettings, HistoryQuery, HistoryResult,
-  SSHMachine, SSHMachineInput, ScannerStatus, DataCollectInfo, DiskUsageInfo,
-  DayFolderSummary, DayFolderListQuery, CloudProvider, MultiCloudOperationResult,
-  TaskDetail, TaskListQuery, UploadQueueStartInput, UploadQueueStatus,
-  UploadQueueStopInput, PluginManifest, PluginProfileStatus, ProjectCapabilityStatus, TaskPluginRun,
-  UploadPipelineManifest,
-  OSSListQuery, OSSListResult, OSSObjectHead, OSSImageResult,
-  GenericConverterStatus
+  AppSettings,
+  CloudProvider,
+  ConnectionTestInput,
+  ConnectionTestResult,
+  DayFolderListQuery,
+  DayFolderSummary,
+  DiskUsageInfo,
+  HistoryQuery,
+  HistoryResult,
+  OSSImageResult,
+  OSSListQuery,
+  OSSListResult,
+  OSSObjectHead,
+  Task,
+  TaskDetail,
+  TaskListQuery,
+  TaskStatus,
+  UploadQueueStartInput,
+  UploadQueueStatus,
+  UploadQueueStopInput,
+  ScannerStatus,
+  UploadRuleDryRunInput,
+  UploadRuleDryRunResult
 } from '@shared/types'
 import type { UploadPathPreview } from '@shared/upload-profile'
 
 const api = window.api
 
-// ---- 任务 ----
 export async function fetchTasks(query?: TaskStatus | TaskListQuery): Promise<Task[]> {
-  const args =
-    typeof query === 'string'
-      ? { status: query }
-      : query
+  const args = typeof query === 'string' ? { status: query } : query
   return (await api.invoke(IPC.TASK_LIST, args)) as Task[]
 }
 
@@ -42,10 +53,6 @@ export async function resumeTask(taskId: string): Promise<void> {
   await api.invoke(IPC.TASK_RESUME, { taskId })
 }
 
-export async function cancelTask(taskId: string): Promise<void> {
-  await api.invoke(IPC.TASK_CANCEL, { taskId })
-}
-
 export async function skipTask(taskId: string): Promise<void> {
   await api.invoke(IPC.TASK_SKIP, { taskId })
 }
@@ -58,7 +65,6 @@ export async function retryTask(taskId: string, provider?: CloudProvider): Promi
   await api.invoke(IPC.TASK_RETRY, { taskId, provider })
 }
 
-// ---- 上传队列 ----
 export async function fetchUploadQueueStatus(): Promise<UploadQueueStatus> {
   return (await api.invoke(IPC.UPLOAD_QUEUE_STATUS)) as UploadQueueStatus
 }
@@ -71,7 +77,6 @@ export async function stopUploadQueue(input: UploadQueueStopInput): Promise<Uplo
   return (await api.invoke(IPC.UPLOAD_QUEUE_STOP, input)) as UploadQueueStatus
 }
 
-// ---- 日期目录汇总 ----
 export async function fetchDayFolders(query?: DayFolderListQuery): Promise<DayFolderSummary[]> {
   return (await api.invoke(IPC.DAY_FOLDER_LIST, query)) as DayFolderSummary[]
 }
@@ -92,7 +97,6 @@ export async function closeUploadGroup(id: string): Promise<DayFolderSummary> {
   return (await api.invoke(IPC.UPLOAD_GROUP_CLOSE, { id })) as DayFolderSummary
 }
 
-// ---- 扫描器 ----
 export async function getScannerStatus(): Promise<ScannerStatus> {
   return (await api.invoke(IPC.SCANNER_STATUS)) as ScannerStatus
 }
@@ -109,7 +113,6 @@ export async function stopScanner(): Promise<void> {
   await api.invoke(IPC.SCANNER_STOP)
 }
 
-// ---- 设置 ----
 export async function fetchSettings(): Promise<AppSettings> {
   return (await api.invoke(IPC.SETTINGS_GET_ALL)) as AppSettings
 }
@@ -126,6 +129,14 @@ export async function testTencentS3(config: AppSettings['tencentS3']): Promise<{
   return (await api.invoke(IPC.SETTINGS_TEST_TENCENT_S3, config)) as { ok: boolean; error?: string }
 }
 
+export async function testConnection(input: ConnectionTestInput): Promise<ConnectionTestResult> {
+  return (await api.invoke(IPC.CONNECTION_TEST, input)) as ConnectionTestResult
+}
+
+export async function dryRunUploadRule(input: UploadRuleDryRunInput): Promise<UploadRuleDryRunResult> {
+  return (await api.invoke(IPC.UPLOAD_RULE_DRY_RUN, input)) as UploadRuleDryRunResult
+}
+
 export async function previewUploadPath(input: {
   profileId?: string
   sourcePath: string
@@ -135,38 +146,6 @@ export async function previewUploadPath(input: {
   return (await api.invoke(IPC.UPLOAD_PATH_PREVIEW, input)) as UploadPathPreview
 }
 
-// ---- 项目插件 ----
-export async function fetchCapabilities(): Promise<{
-  uploadPipelines: UploadPipelineManifest[]
-  extensions: PluginManifest[]
-}> {
-  return (await api.invoke(IPC.CAPABILITY_LIST)) as {
-    uploadPipelines: UploadPipelineManifest[]
-    extensions: PluginManifest[]
-  }
-}
-
-export async function fetchProjectCapabilityStatus(profileId?: string): Promise<ProjectCapabilityStatus> {
-  return (await api.invoke(IPC.CAPABILITY_PROFILE_STATUS, { profileId })) as ProjectCapabilityStatus
-}
-
-export async function fetchCapabilityRuns(taskId: string): Promise<TaskPluginRun[]> {
-  return (await api.invoke(IPC.CAPABILITY_TASK_RUNS, { taskId })) as TaskPluginRun[]
-}
-
-export async function fetchPlugins(): Promise<PluginManifest[]> {
-  return (await api.invoke(IPC.PLUGIN_LIST)) as PluginManifest[]
-}
-
-export async function fetchPluginProfileStatus(profileId?: string): Promise<PluginProfileStatus> {
-  return (await api.invoke(IPC.PLUGIN_PROFILE_STATUS, { profileId })) as PluginProfileStatus
-}
-
-export async function fetchTaskPluginRuns(taskId: string): Promise<TaskPluginRun[]> {
-  return (await api.invoke(IPC.PLUGIN_TASK_RUNS, { taskId })) as TaskPluginRun[]
-}
-
-// ---- OSS 浏览（只读工具插件） ----
 export async function listOSSObjects(query: OSSListQuery): Promise<OSSListResult> {
   return (await api.invoke(IPC.OSS_BROWSER_LIST, query)) as OSSListResult
 }
@@ -183,70 +162,6 @@ export async function openOSSPreviewWindow(key: string): Promise<void> {
   await api.invoke(IPC.OSS_BROWSER_OPEN_PREVIEW_WINDOW, { key })
 }
 
-// ---- 通用转换工具 ----
-export async function fetchGenericConverterStatus(): Promise<GenericConverterStatus> {
-  return (await api.invoke(IPC.GENERIC_CONVERTER_STATUS)) as GenericConverterStatus
-}
-
-export async function startGenericConverter(profileId: string): Promise<GenericConverterStatus> {
-  return (await api.invoke(IPC.GENERIC_CONVERTER_START, { profileId })) as GenericConverterStatus
-}
-
-export async function stopGenericConverter(profileId: string): Promise<GenericConverterStatus> {
-  return (await api.invoke(IPC.GENERIC_CONVERTER_STOP, { profileId })) as GenericConverterStatus
-}
-
-export async function scanGenericConverterNow(profileId: string): Promise<GenericConverterStatus> {
-  return (await api.invoke(IPC.GENERIC_CONVERTER_SCAN_NOW, { profileId })) as GenericConverterStatus
-}
-
-// ---- SSH ----
-export async function fetchSSHMachines(): Promise<SSHMachine[]> {
-  return (await api.invoke(IPC.SSH_LIST_MACHINES)) as SSHMachine[]
-}
-
-export async function addSSHMachine(input: SSHMachineInput): Promise<SSHMachine> {
-  return (await api.invoke(IPC.SSH_ADD_MACHINE, input)) as SSHMachine
-}
-
-export async function updateSSHMachine(machine: SSHMachine): Promise<void> {
-  await api.invoke(IPC.SSH_UPDATE_MACHINE, machine)
-}
-
-export async function deleteSSHMachine(id: string): Promise<void> {
-  await api.invoke(IPC.SSH_DELETE_MACHINE, { id })
-}
-
-export async function testSSHConnection(id: string): Promise<{ ok: boolean; error?: string }> {
-  return (await api.invoke(IPC.SSH_TEST_CONNECTION, { id })) as { ok: boolean; error?: string }
-}
-
-export async function startRsync(machineId: string): Promise<void> {
-  await api.invoke(IPC.RSYNC_START, { machineId })
-}
-
-export async function stopRsync(machineId: string): Promise<void> {
-  await api.invoke(IPC.RSYNC_STOP, { machineId })
-}
-
-export async function startSftp(machineId: string): Promise<MultiCloudOperationResult> {
-  return (await api.invoke(IPC.SFTP_START, { machineId })) as MultiCloudOperationResult
-}
-
-export async function stopSftp(machineId: string): Promise<void> {
-  await api.invoke(IPC.SFTP_STOP, { machineId })
-}
-
-// ---- 数采模式 ----
-export async function fetchDataCollectList(): Promise<DataCollectInfo[]> {
-  return (await api.invoke(IPC.DATA_COLLECT_LIST)) as DataCollectInfo[]
-}
-
-export async function runDataCollect(folderPath: string): Promise<DataCollectInfo | null> {
-  return (await api.invoke(IPC.DATA_COLLECT_RUN, { folderPath })) as DataCollectInfo | null
-}
-
-// ---- 历史 ----
 export async function fetchHistory(query: HistoryQuery): Promise<HistoryResult> {
   return (await api.invoke(IPC.HISTORY_LIST, query)) as HistoryResult
 }
@@ -259,12 +174,10 @@ export async function deleteHistoryItem(id: string, provider?: CloudProvider): P
   await api.invoke(IPC.HISTORY_DELETE, { id, provider })
 }
 
-// ---- 对话框 ----
 export async function selectFolder(): Promise<string | null> {
   return (await api.invoke(IPC.DIALOG_SELECT_FOLDER)) as string | null
 }
 
-// ---- 磁盘用量 ----
 export async function fetchDiskUsage(): Promise<DiskUsageInfo[]> {
   return (await api.invoke(IPC.DISK_USAGE)) as DiskUsageInfo[]
 }

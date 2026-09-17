@@ -200,9 +200,7 @@ export function getProfileSourceDirectories(profile: UploadProfile): string[] {
   const sourceRoots = normalizeSourceDirectories(
     profile.source?.roots?.length
       ? profile.source.roots
-      : profile.source?.root
-        ? [profile.source.root]
-        : []
+      : []
   )
   if (sourceRoots.length > 0) return sourceRoots
 
@@ -222,9 +220,7 @@ function getProfileSourceDirectoriesForProviders(
   const sourceRoots = normalizeSourceDirectories(
     profile.source?.roots?.length
       ? profile.source.roots
-      : profile.source?.root
-        ? [profile.source.root]
-        : []
+      : []
   )
   if (sourceRoots.length > 0) return sourceRoots
 

@@ -1,13 +1,12 @@
 {
-  "name": "electron-uploader",
-  "version": "2.3.0",
-  "description": "云桥上传器：工业采集数据多云归档工具",
+  "name": "cloudbridge-uploader",
+  "version": "3.0.0",
+  "description": "CloudBridge Uploader: rule-driven multi-cloud upload bridge",
   "author": {
-    "name": "WeldingTeam",
-    "email": "welding@example.com"
+    "name": "MzKyle"
   },
   "license": "MIT",
-  "homepage": "https://github.com/MzKyle/Auto-Upload-Studio",
+  "homepage": "https://github.com/MzKyle/CloudBridge-Uploader",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -35,7 +34,6 @@
     "better-sqlite3": "^11.7.0",
     "chokidar": "^4.0.3",
     "electron-log": "^5.3.0",
-    "ssh2": "^1.16.0",
     "uuid": "^11.0.5"
   },
   "devDependencies": {
@@ -45,7 +43,6 @@
     "@types/better-sqlite3": "^7.6.12",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
-    "@types/ssh2": "^1.15.4",
     "@types/uuid": "^10.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",

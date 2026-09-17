@@ -25,10 +25,8 @@ import {
   resolveProfileUploadSnapshot
 } from '@shared/upload-profile'
 import { getTaskRepo } from '../db/task.repo'
-import { getTaskDestinationRepo } from '../db/task-destination.repo'
 import { getDayFolderRepo } from '../db/day-folder.repo'
 import { getSettingsRepo } from '../db/settings.repo'
-import { getDataCollectService } from './data-collect.service'
 import { getDayFolderService } from './day-folder.service'
 import { getTaskQueueService } from './task-queue.service'
 import { FileFilterService } from './file-filter.service'
@@ -36,17 +34,9 @@ import {
   discoverUploadGroups,
   type DiscoveredUploadTaskDirectory
 } from './date-directory-discovery'
-import {
-  readProcessTask,
-  readTmpUpload,
-  writeProcessTask,
-  writeTmpUpload
-} from '../utils/marker-file'
 import type {
-  TmpUploadMarker,
   StabilityConfig,
   ScannerStatus,
-  DataCollectConfig,
   Task,
   UploadTargetMode,
   CloudProvider,
@@ -71,8 +61,8 @@ interface PendingDir {
   profileSnapshot?: AppSettings['profiles'][number]
   destinationPrefixes?: Partial<Record<CloudProvider, string>>
   destinationUploadRelativePaths?: Partial<Record<CloudProvider, string>>
-  destinationPathModes?: TmpUploadMarker['metadata']['destinationPathModes']
-  destinationObjectKeyTemplates?: TmpUploadMarker['metadata']['destinationObjectKeyTemplates']
+  destinationPathModes?: Partial<Record<CloudProvider, UploadPathMode>>
+  destinationObjectKeyTemplates?: Partial<Record<CloudProvider, string | null>>
 }
 
 const NON_WORK_DIR_REASON = '非任务目录'
@@ -401,60 +391,6 @@ export class ScannerService {
           continue
         }
 
-        const processMarker = readProcessTask(childPath)
-        if (processMarker?.status === 'completed') {
-          this.registerLegacyCompletedDir(
-            childPath,
-            childName,
-            dayFolder.id,
-            groupKey,
-            variables,
-            processMarker,
-            readTmpUpload(childPath)
-          )
-          existing++
-          continue
-        }
-
-        const tmpMarker = readTmpUpload(childPath)
-        if (tmpMarker) {
-          const markerUploadRelativePath =
-            tmpMarker.metadata.uploadRelativePath ?? uploadRelativePath
-          const task = this.registerNewDir({
-            path: childPath,
-            dayFolderId: dayFolder.id,
-            groupKey,
-            variables,
-            folderName: childName,
-            uploadRelativePath: markerUploadRelativePath,
-            checks: 0,
-            discoveredAt: tmpMarker.createdAt || new Date().toISOString(),
-            lastSnapshot: new Map(),
-            uploadTargetMode: tmpMarker.metadata.uploadTargetMode,
-            profileId: tmpMarker.metadata.profileId,
-            profileName: tmpMarker.metadata.profileName,
-            profileSnapshot: tmpMarker.metadata.profileSnapshot,
-            destinationPrefixes: tmpMarker.metadata.destinationPrefixes,
-            destinationUploadRelativePaths:
-              tmpMarker.metadata.destinationUploadRelativePaths ||
-              this.legacyDestinationUploadRelativePaths(
-                tmpMarker.metadata.uploadTargetMode,
-                markerUploadRelativePath
-              ),
-            destinationPathModes: tmpMarker.metadata.destinationPathModes,
-            destinationObjectKeyTemplates:
-              tmpMarker.metadata.destinationObjectKeyTemplates
-          })
-          if (dayFolder.ignored) {
-            getTaskRepo().skip(task.id, '用户忽略整个归档组')
-            this.broadcastTaskStatus(task.id, task.status, 'skipped')
-          } else {
-            this.queueReconcileTask(task)
-          }
-          existing++
-          continue
-        }
-
         if (!this.pendingDirs.has(childPath)) {
           log.info('发现新任务目录, 注册持续同步任务:', childPath)
           const pending: PendingDir = {
@@ -535,29 +471,6 @@ export class ScannerService {
             objectKeyTemplates: pending.destinationObjectKeyTemplates
           }
         : this.legacySnapshotForPendingDir(pending, settings)
-    const marker: TmpUploadMarker = {
-      version: 2,
-      createdAt: new Date().toISOString(),
-      folderPath: pending.path,
-      metadata: {
-        source: 'local',
-        dayFolderId: pending.dayFolderId,
-        date: pending.variables.date,
-        groupKey: pending.groupKey,
-        groupVariables: pending.variables,
-        uploadRelativePath: pending.uploadRelativePath,
-        uploadTargetMode: snapshot.mode,
-        profileId: snapshot.profileId,
-        profileName: snapshot.profileName,
-        profileSnapshot: snapshot.profileSnapshot,
-        destinationPrefixes: snapshot.prefixes,
-        destinationUploadRelativePaths: snapshot.uploadRelativePaths,
-        destinationPathModes: snapshot.pathModes,
-        destinationObjectKeyTemplates: snapshot.objectKeyTemplates
-      }
-    }
-
-    writeTmpUpload(pending.path, marker)
     const task = this.ensureTaskRegistered(
       pending.path,
       pending.folderName,
@@ -567,7 +480,6 @@ export class ScannerService {
       pending.variables
     )
     log.info('任务目录已注册为上传任务:', pending.path)
-    setTimeout(() => this.collectDataInfo(pending.path), 0)
     getDayFolderService().refresh(pending.dayFolderId)
     return task
   }
@@ -805,102 +717,6 @@ export class ScannerService {
     }
   }
 
-  private registerLegacyCompletedDir(
-    dirPath: string,
-    folderName: string,
-    dayFolderId: string,
-    groupKey: string,
-    variables: PathVariables,
-    processMarker: NonNullable<ReturnType<typeof readProcessTask>>,
-    tmpMarker: ReturnType<typeof readTmpUpload>
-  ): void {
-    const legacyUploadRelativePath = folderName
-    const markerProviders = Object.keys(processMarker.destinations || {}) as CloudProvider[]
-    const mode = processMarker.uploadTargetMode || (
-      markerProviders.includes('tencent') && markerProviders.includes('aliyun')
-        ? 'both'
-        : markerProviders.includes('tencent')
-          ? 'tencent'
-          : 'aliyun'
-    )
-    const currentSettings = getSettingsRepo().getAll()
-    const prefixes = {
-      aliyun:
-        tmpMarker?.metadata.destinationPrefixes?.aliyun ||
-        currentSettings.oss.prefix ||
-        '',
-      tencent:
-        tmpMarker?.metadata.destinationPrefixes?.tencent ||
-        currentSettings.tencentS3.prefix ||
-        ''
-    }
-    const uploadRelativePaths =
-      tmpMarker?.metadata.destinationUploadRelativePaths ||
-      this.legacyDestinationUploadRelativePaths(mode, legacyUploadRelativePath)
-    const task = this.ensureTaskRegistered(
-      dirPath,
-      folderName,
-      dayFolderId,
-      legacyUploadRelativePath,
-      {
-        mode,
-        prefixes,
-        uploadRelativePaths,
-        uploadRelativePath: legacyUploadRelativePath
-      },
-      variables
-    )
-    const taskRepo = getTaskRepo()
-    taskRepo.setTotals(task.id, processMarker.totalFiles, 0)
-    taskRepo.updateProgress(task.id, processMarker.uploadedFiles, 0)
-    taskRepo.updateStatus(task.id, 'completed')
-    for (const destination of getTaskDestinationRepo().listByTask(task.id)) {
-      const marker = processMarker.destinations?.[destination.provider]
-      getTaskDestinationRepo().setTotals(
-        task.id,
-        destination.provider,
-        marker?.totalFiles ?? processMarker.totalFiles,
-        0
-      )
-      getTaskDestinationRepo().updateProgress(
-        task.id,
-        destination.provider,
-        marker?.uploadedFiles ?? processMarker.uploadedFiles,
-        0
-      )
-      getTaskDestinationRepo().updateStatus(
-        task.id,
-        destination.provider,
-        'completed'
-      )
-    }
-
-    writeTmpUpload(dirPath, {
-      version: 2,
-      createdAt: new Date().toISOString(),
-      folderPath: dirPath,
-      metadata: {
-        source: 'local',
-        dayFolderId,
-        date: variables.date,
-        groupKey,
-        groupVariables: variables,
-        uploadRelativePath: legacyUploadRelativePath,
-        uploadTargetMode: mode,
-        destinationPrefixes: prefixes,
-        destinationUploadRelativePaths: uploadRelativePaths
-      }
-    })
-    writeProcessTask(dirPath, {
-      ...processMarker,
-      taskId: task.id,
-      status: 'completed',
-      lastUpdated: new Date().toISOString()
-    })
-    getDayFolderService().refresh(dayFolderId)
-    log.info('信任旧完成标记并登记任务目录:', dirPath)
-  }
-
   private ensureTaskRegistered(
     dirPath: string,
     folderName: string,
@@ -1010,23 +826,6 @@ export class ScannerService {
       paths[provider] = uploadRelativePath
     }
     return paths
-  }
-
-  private collectDataInfo(dirPath: string): void {
-    const settings = getSettingsRepo()
-    const dataCollectConfig = settings.get<DataCollectConfig>('dataCollect')
-    if (!dataCollectConfig?.enabled) return
-
-    try {
-      const info = getDataCollectService().collectDataInfo(dirPath)
-      if (info) {
-        for (const win of BrowserWindow?.getAllWindows?.() ?? []) {
-          win.webContents.send(IPC.DATA_COLLECT_RESULT, info)
-        }
-      }
-    } catch (err) {
-      log.warn('数采分析失败:', dirPath, err)
-    }
   }
 
   private broadcastStatus(): void {

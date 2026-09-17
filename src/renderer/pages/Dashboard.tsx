@@ -15,7 +15,6 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { BulkActionBar } from "@/components/BulkActionBar";
 import { TaskCard } from "@/components/TaskCard";
 import { TaskDetailDrawer } from "@/components/TaskDetailDrawer";
-import { DataCollectCard } from "@/components/DataCollectCard";
 import { ScanSchedulePanel } from "@/components/ScanSchedulePanel";
 import { DiskUsagePanel } from "@/components/DiskUsagePanel";
 import { DayFolderCard } from "@/components/DayFolderCard";
@@ -35,7 +34,6 @@ import {
   restoreTask,
   retryTask,
   triggerScan,
-  fetchDataCollectList,
   fetchDayFolders,
   ignoreDayFolder,
   restoreDayFolder,
@@ -49,7 +47,6 @@ import {
 import { IPC } from "@shared/ipc-channels";
 import type {
   CloudProvider,
-  DataCollectInfo,
   DayFolderSummary,
   Task,
   UploadQueueStatus,
@@ -79,7 +76,6 @@ export default function Dashboard() {
   const tasks = useTaskStore((state) => state.tasks);
   const loading = useTaskStore((state) => state.loading);
   const loadTasks = useTaskStore((state) => state.loadTasks);
-  const [dataCollects, setDataCollects] = useState<DataCollectInfo[]>([]);
   const [dayFolders, setDayFolders] = useState<DayFolderSummary[]>([]);
   const [provider, setProvider] = useState<CloudProvider>("aliyun");
   const [providerReady, setProviderReady] = useState(false);
@@ -126,9 +122,6 @@ export default function Dashboard() {
   useEffect(() => {
     if (!providerReady) return;
     loadTasks();
-    fetchDataCollectList()
-      .then(setDataCollects)
-      .catch(() => {});
     fetchDayFolders({ limit: 30, provider, includeCompleted: false })
       .then(setDayFolders)
       .catch(() => {});
@@ -136,24 +129,6 @@ export default function Dashboard() {
       .then(setUploadQueueStatus)
       .catch(() => {});
   }, [loadTasks, provider, providerReady]);
-
-  // 监听新的数采结果
-  useEffect(() => {
-    const off = window.api.on(
-      IPC.DATA_COLLECT_RESULT,
-      (_event: unknown, data: unknown) => {
-        const info = data as DataCollectInfo;
-        setDataCollects((prev) => {
-          const filtered = prev.filter((d) => d.folderPath !== info.folderPath);
-          const updated = [info, ...filtered];
-          return updated.slice(0, 100);
-        });
-      }
-    );
-    return () => {
-      off();
-    };
-  }, []);
 
   useEffect(() => {
     const off = window.api.on(
@@ -798,23 +773,6 @@ export default function Dashboard() {
             </Button>
           }
         />
-      )}
-
-      {/* 数据采集结果 */}
-      {dataCollects.length > 0 && (
-        <section>
-          <h2 className="text-sm font-semibold text-muted-foreground mb-3">
-            数据采集 ({dataCollects.length})
-          </h2>
-          {dataCollects.slice(0, 20).map((info) => (
-            <DataCollectCard key={info.folderPath} info={info} />
-          ))}
-          {dataCollects.length > 20 && (
-            <div className="text-xs text-muted-foreground text-center py-2">
-              还有 {dataCollects.length - 20} 条记录...
-            </div>
-          )}
-        </section>
       )}
 
       {pendingFolder && (

@@ -8,7 +8,6 @@ import {
   isDateFolderBeforeToday,
   isDateFolderName,
   parseDateFolderName,
-  resolveDirectoryUploadRelativePath
 } from '../src/shared/day-folder'
 
 test('validates real YYYY-MM-DD directory names', () => {
@@ -66,19 +65,5 @@ test('keeps the date level when uploading a date directory or its child package'
   assert.equal(
     deriveDateScopedUploadRelativePath('D:\\data\\2026-03-14\\08-05-00'),
     '2026-03-14/08-05-00'
-  )
-})
-
-test('uses the remote date path for rsync destinations without a date level', () => {
-  assert.equal(
-    resolveDirectoryUploadRelativePath(
-      '/remote/data/2026-03-14/17-38-09_teleop',
-      '/var/cache/current-package'
-    ),
-    '2026-03-14/17-38-09_teleop'
-  )
-  assert.equal(
-    resolveDirectoryUploadRelativePath('/var/cache/current-package'),
-    'current-package'
   )
 })

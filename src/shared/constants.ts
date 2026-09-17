@@ -2,11 +2,6 @@
 // 共享常量
 // ============================================
 
-import {
-  DEFAULT_PROFILE_EXTENSIONS,
-  DEFAULT_PROFILE_UPLOAD_PIPELINE
-} from './plugins'
-
 export const APP_NAME = '云桥上传器'
 export const DEFAULT_WORK_DIR_NAME_PATTERN = '^\\d{2}-\\d{2}-\\d{2}$'
 export const DEFAULT_UPLOAD_PROFILE_ID = 'default'
@@ -59,7 +54,6 @@ export const DEFAULT_SETTINGS = {
       name: '默认归档',
       enabled: true,
       source: {
-        root: '',
         roots: []
       },
       destinations: [
@@ -112,8 +106,6 @@ export const DEFAULT_SETTINGS = {
           objectKeyTemplate: '{relativePath}'
         }
       },
-      uploadPipeline: DEFAULT_PROFILE_UPLOAD_PIPELINE,
-      extensions: DEFAULT_PROFILE_EXTENSIONS
     }
   ],
   activeProfileId: DEFAULT_UPLOAD_PROFILE_ID,
@@ -137,21 +129,12 @@ export const DEFAULT_SETTINGS = {
     directory: '',  // 空字符串表示使用默认 userData/logs
     maxDays: 30
   },
-  dataCollect: {
-    enabled: false
-  },
   cleanup: {
     enabled: false,
     retentionDays: 7,
     onlyAfterSealed: true
   }
 }
-
-export const MARKER_FILES = {
-  TMP_UPLOAD: 'tmp_upload.json',
-  PROCESS_TASK: 'process_task.json',
-  DAY_UPLOAD: 'day_upload.json'
-} as const
 
 export const TASK_STATUS_LABELS: Record<string, string> = {
   pending: '等待中',

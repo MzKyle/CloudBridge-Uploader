@@ -14,7 +14,7 @@ export type TaskStatus =
   | 'paused'
   | 'skipped'
 export type FileStatus = 'pending' | 'uploading' | 'completed' | 'failed' | 'skipped'
-export type SourceType = 'local' | 'rsync' | 'manual'
+export type SourceType = 'local' | 'manual'
 export type FileSourceStatus = 'present' | 'missing'
 export type DayFolderStatus =
   | 'collecting'
@@ -22,8 +22,6 @@ export type DayFolderStatus =
   | 'blocked'
   | 'completed'
   | 'completed_with_skips'
-export type SSHAuthType = 'key' | 'password'
-export type TransferMode = 'rsync' | 'sftp'
 export type CloudProvider = 'aliyun' | 'tencent'
 export type UploadTargetMode = 'aliyun' | 'tencent' | 'both'
 export type UploadPathMode =
@@ -43,7 +41,6 @@ export type UploadGroupStatus =
   | 'error'
 
 export interface UploadSourceConfig {
-  root: string
   roots: string[]
 }
 
@@ -87,6 +84,67 @@ export interface CloudConnection {
   type: CloudConnectionType
   provider?: CloudProvider
   config: Record<string, unknown>
+}
+
+export interface ConnectionTestInput {
+  connectionId: string
+  type: CloudConnectionType
+  config: Partial<OSSConfig & TencentS3Config>
+}
+
+export interface ConnectionTestResult {
+  ok: boolean
+  error?: string
+}
+
+export interface UploadRuleDryRunInput {
+  profileId?: string
+  rule?: UploadProfile
+  sourceRoot?: string
+  sampleLimit?: number
+}
+
+export interface UploadRuleDryRunFilePreview {
+  relativePath: string
+  size: number
+  objectKeys: Array<{
+    connectionId: string
+    provider: CloudProvider
+    key: string
+  }>
+}
+
+export interface UploadRuleDryRunTaskPreview {
+  taskKey: string
+  folderPath: string
+  variables: PathVariables
+  ignored: boolean
+  filesScanned: number
+  sampleFiles: UploadRuleDryRunFilePreview[]
+}
+
+export interface UploadRuleDryRunGroupPreview {
+  groupKey: string
+  folderPath: string
+  variables: PathVariables
+  tasks: UploadRuleDryRunTaskPreview[]
+}
+
+export interface UploadRuleDryRunResult {
+  ok: boolean
+  ruleId: string
+  ruleName: string
+  sourceRoot: string
+  totals: {
+    groups: number
+    tasks: number
+    ignoredTasks: number
+    filesScanned: number
+    sampledFiles: number
+  }
+  errors: string[]
+  warnings: string[]
+  groups: UploadRuleDryRunGroupPreview[]
 }
 
 export interface Task {
@@ -272,50 +330,6 @@ export interface DayFolderListQuery {
   provider?: CloudProvider
 }
 
-// ---- SSH 机器 ----
-export interface SSHMachine {
-  id: string
-  name: string
-  host: string
-  port: number
-  username: string
-  authType: SSHAuthType
-  privateKeyPath: string | null
-  remoteDir: string
-  localDir: string
-  bwLimit: number
-  cpuNice: number
-  transferMode: TransferMode
-  profileId: string | null
-  enabled: boolean
-  lastSyncAt: string | null
-  createdAt: string
-}
-
-export interface SSHMachineInput {
-  name: string
-  host: string
-  port: number
-  username: string
-  authType: SSHAuthType
-  privateKeyPath?: string
-  password?: string
-  remoteDir: string
-  localDir: string
-  bwLimit: number
-  cpuNice: number
-  transferMode: TransferMode
-  profileId?: string | null
-  enabled: boolean
-}
-
-export interface RsyncProgress {
-  machineId: string
-  percent: number
-  speed: string
-  file: string
-}
-
 // ---- 设置 ----
 export interface FilterRules {
   whitelist: string[]   // 白名单文件/模式（最高优先级）
@@ -378,159 +392,12 @@ export interface UploadProfile {
   filter: FilterRules
   scan: UploadProfileScanConfig
   providers: Record<CloudProvider, UploadProfileProviderConfig>
-  uploadPipeline?: ProfileUploadPipelineConfig
-  extensions?: ProfileExtensionConfig
-  plugins?: ProfilePluginConfig
 }
 
 export interface WebhookConfig {
   url: string
   headers: Record<string, string>
   enabled: boolean
-}
-
-export interface GenericConverterConfig {
-  enabled: boolean
-  pythonPath: string
-  monitorScriptPath: string
-  converterScriptPath: string
-  dataRoot: string
-  outputRoot: string
-  deviceCode: string
-  stableSeconds: number
-  pollIntervalSeconds: number
-  retryFailed: boolean
-  env: Record<string, string>
-  extraArgs: string[]
-  outputDirectoryTemplate: string
-  outputBatchNameTemplate: string
-  outputFileNameTemplate: string
-  outputBatchNamePattern: string
-}
-
-export type GenericConverterRuntimeState =
-  | 'disabled'
-  | 'stopped'
-  | 'starting'
-  | 'running'
-  | 'failed'
-
-export interface GenericConverterProfileStatus {
-  profileId: string
-  profileName: string
-  enabled: boolean
-  configured: boolean
-  state: GenericConverterRuntimeState
-  running: boolean
-  pid: number | null
-  startedAt: string | null
-  stoppedAt: string | null
-  exitCode: number | null
-  lastError: string | null
-  dataRoot: string
-  outputRoot: string
-  monitorScriptPath: string
-  recentLogs: string[]
-}
-
-export interface GenericConverterStatus {
-  profiles: GenericConverterProfileStatus[]
-}
-
-export type UploadPipelineId = 'standard-upload' | 'sany-module1-upload'
-export type ExtensionId = 'webhook-notifier' | 'oss-browser' | 'generic-converter'
-export type PluginCategory = 'pipeline' | 'preUpload' | 'notification' | 'tool'
-export type PluginRunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
-
-export interface UploadPipelineManifest {
-  id: UploadPipelineId
-  name: string
-  version: string
-  category: 'pipeline'
-  description: string
-  legacy?: boolean
-}
-
-export interface ExtensionManifest {
-  id: ExtensionId
-  name: string
-  version: string
-  category: 'notification' | 'tool'
-  description: string
-}
-
-export type PluginManifest = ExtensionManifest
-
-export interface ProfileUploadPipelineConfig {
-  id: UploadPipelineId
-  config: Record<string, unknown>
-}
-
-export interface ProfileExtensionConfig {
-  enabledIds: string[]
-  configs: Record<string, unknown>
-}
-
-export interface ProfilePluginConfig {
-  enabledPluginIds: string[]
-  order: string[]
-  configs: Record<string, unknown>
-}
-
-export interface PreUploadFilePlan {
-  relativePath: string
-  fileSize: number
-  mtimeMs: number
-  plannedObjectKey?: string
-}
-
-export interface UploadPipelineResult {
-  pipelineId: UploadPipelineId
-  uploadRootPath: string
-  files: PreUploadFilePlan[]
-  requiredStableChecks: number
-  summary?: Record<string, unknown>
-  artifacts?: Record<string, unknown>
-}
-
-export type PreUploadResult = UploadPipelineResult
-
-export interface TaskPluginRun {
-  id: string
-  taskId: string
-  pluginId: string
-  category: PluginCategory
-  status: PluginRunStatus
-  startedAt: string
-  completedAt: string | null
-  errorMessage: string | null
-  summary: Record<string, unknown> | null
-  stagingPath: string | null
-  artifacts: Record<string, unknown> | null
-}
-
-export interface PluginProfileStatusItem {
-  manifest: PluginManifest
-  enabled: boolean
-  configSummary: string
-  lastRun: TaskPluginRun | null
-}
-
-export interface PluginProfileStatus {
-  profileId: string
-  profileName: string
-  plugins: PluginProfileStatusItem[]
-}
-
-export interface ProjectCapabilityStatus {
-  profileId: string
-  profileName: string
-  uploadPipeline: {
-    manifest: UploadPipelineManifest
-    configSummary: string
-    lastRun: TaskPluginRun | null
-  }
-  extensions: PluginProfileStatusItem[]
 }
 
 export interface ScanConfig {
@@ -559,10 +426,6 @@ export interface LogConfig {
   maxDays: number      // 日志保留天数
 }
 
-export interface DataCollectConfig {
-  enabled: boolean
-}
-
 export interface CleanupConfig {
   enabled: boolean
   retentionDays: number
@@ -582,7 +445,6 @@ export interface AppSettings {
   hotkey: string
   stability: StabilityConfig
   log: LogConfig
-  dataCollect: DataCollectConfig
   cleanup: CleanupConfig
 }
 
@@ -609,51 +471,6 @@ export interface ScannerStatus {
   } | null
 }
 
-// ---- 数采模式 ----
-export interface DataCollectInfo {
-  folderPath: string
-  folderName: string
-  date: string | null
-  sessionTime: string | null
-  weldSignal: {
-    arcStartUs: number | null
-    arcEndUs: number | null
-    arcStartTime: string | null
-    arcEndTime: string | null
-    durationSeconds: number | null
-  }
-  cameras: Array<{
-    name: string
-    imageCount: number
-    tsMinUs: number | null
-    tsMaxUs: number | null
-    tsMinTime: string | null
-    tsMaxTime: string | null
-  }>
-  robotState: { jointStateRows: number; toolPoseRows: number; hasCalibration: boolean }
-  controlCmd: { speedRows: number; freqRows: number }
-  pointCloudCount: number
-  depthImageCount: number
-  annotation: {
-    hasXml: boolean
-    dataType: string | null
-    qualityType: string | null
-    specMin: number | null
-    specMax: number | null
-  }
-  totalFileCount: number
-  totalSizeBytes: number
-  collectedAt: string
-}
-
-export interface SftpProgress {
-  machineId: string
-  totalFiles: number
-  uploadedFiles: number
-  currentFile: string
-  speed: string
-}
-
 // ---- 历史记录 ----
 export interface HistoryItem {
   id: string
@@ -676,83 +493,6 @@ export interface HistoryQuery {
 export interface HistoryResult {
   items: HistoryItem[]
   total: number
-}
-
-// ---- 标记文件 ----
-export interface TmpUploadMarker {
-  version: number
-  createdAt: string
-  folderPath: string
-  metadata: {
-    source: SourceType
-    machineId?: string
-    dayFolderId?: string
-    date?: string
-    uploadRelativePath?: string
-    uploadTargetMode?: UploadTargetMode
-	    profileId?: string
-	    profileName?: string
-	    profileSnapshot?: UploadProfile
-	    groupKey?: string
-	    groupVariables?: PathVariables
-	    destinationPrefixes?: Partial<Record<CloudProvider, string>>
-    destinationUploadRelativePaths?: Partial<Record<CloudProvider, string>>
-    destinationPathModes?: Partial<Record<CloudProvider, UploadPathMode>>
-    destinationObjectKeyTemplates?: Partial<Record<CloudProvider, string | null>>
-  }
-}
-
-export interface ProcessTaskDestinationMarker {
-  status: TaskStatus
-  uploadRelativePath?: string
-  pathMode?: UploadPathMode
-  objectKeyTemplate?: string | null
-  totalFiles: number
-  uploadedFiles: number
-  files?: Record<string, FileStatus>
-  failedFiles?: number
-  skippedFiles?: number
-  error: string | null
-}
-
-export interface ProcessTaskMarker {
-  version: number
-  taskId: string
-  status: TaskStatus
-  totalFiles: number
-  uploadedFiles: number
-  files?: Record<string, FileStatus>
-  failedFiles?: number
-  skippedFiles?: number
-  lastUpdated: string
-  error: string | null
-  uploadTargetMode?: UploadTargetMode
-  destinations?: Partial<Record<CloudProvider, ProcessTaskDestinationMarker>>
-}
-
-export interface DayUploadMarker {
-  version: number
-  dayFolderId: string
-  date: string
-  folderPath: string
-  status: 'completed' | 'completed_with_skips'
-  totalChildren: number
-  totalFiles: number
-  uploadedFiles: number
-  totalBytes: number
-  uploadedBytes: number
-  children: Array<{
-    folderName: string
-    folderPath: string
-    taskId: string
-    completedAt: string | null
-    destinations?: Array<{
-      provider: CloudProvider
-      status: TaskStatus
-      completedAt: string | null
-    }>
-  }>
-  completedAt: string
 }
 
 export interface CloudOperationResult {

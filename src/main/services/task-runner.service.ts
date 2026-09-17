@@ -18,18 +18,26 @@ import {
 import { getSettingsRepo } from '../db/settings.repo'
 import { getCloudUploadService } from './cloud-upload.service'
 import type { CloudTaskUploader } from './cloud-upload.types'
-import { getUploadPipelineRuntimeService } from './upload-pipeline-runtime.service'
-import { writeProcessTask } from '../utils/marker-file'
+import { FileFilterService } from './file-filter.service'
 import { SpeedCalculator } from '../utils/speed-calculator'
 import { getUploadSemaphore } from '../utils/upload-semaphore'
 import type {
   CloudProvider,
-  ProcessTaskMarker,
   Task,
-  UploadPipelineResult,
   TaskProgress,
   TaskStatus
 } from '@shared/types'
+
+interface UploadPipelineResult {
+  uploadRootPath: string
+  files: Array<{
+    relativePath: string
+    fileSize: number
+    mtimeMs: number
+    plannedObjectKey?: string
+  }>
+  requiredStableChecks: number
+}
 
 interface ProviderRuntime {
   uploader: CloudTaskUploader
@@ -58,7 +66,6 @@ interface LogicalProgress {
 type ObjectKeyBaseContext = Omit<ObjectKeyRenderContext, 'relativePath'>
 
 const RETRY_DELAYS_MS = [1000, 2000, 5000, 15000, 30000]
-const MARKER_WRITE_INTERVAL_MS = 5000
 const PROGRESS_PERSIST_INTERVAL_MS = 1000
 
 export class TaskRunnerService {
@@ -80,10 +87,7 @@ export class TaskRunnerService {
       return 'skipped'
     }
 
-    const uploadPlan = await getUploadPipelineRuntimeService().prepareUploadPlan(
-      task,
-      stableChecks
-    )
+    const uploadPlan = await this.prepareUploadPlan(task, stableChecks)
     const uploadRootPath = uploadPlan.uploadRootPath
     if (!existsSync(uploadRootPath)) {
       throw new Error('上传工作目录不存在')
@@ -178,25 +182,6 @@ export class TaskRunnerService {
     }
     signal?.addEventListener('abort', abortUploaders, { once: true })
 
-    const markerDestinations = destinations.map((destination) =>
-      jobProviders.has(destination.provider)
-        ? { ...destination, status: 'uploading' as const }
-        : destination
-    )
-    const marker = this.createCompactMarker(
-      { ...task, status: 'uploading' },
-      markerDestinations
-    )
-    this.writeMarker(task.folderPath, marker)
-    const markerTimer = setInterval(() => {
-      const currentTask = taskRepo.getById(task.id)
-      if (!currentTask) return
-      this.writeMarker(
-        task.folderPath,
-        this.createCompactMarker(currentTask, currentTask.destinations)
-      )
-    }, MARKER_WRITE_INTERVAL_MS)
-
     const maxConcurrentUploads =
       settings.upload.maxConcurrentUploads ||
       DEFAULT_SETTINGS.upload.maxConcurrentUploads
@@ -233,7 +218,6 @@ export class TaskRunnerService {
         Array.from({ length: workerCount }, () => runNext())
       )
     } finally {
-      clearInterval(markerTimer)
       signal?.removeEventListener('abort', abortUploaders)
       this.persistLogicalProgress(task.id, logicalProgress, true)
       for (const [provider, runtime] of runtimes) {
@@ -248,13 +232,29 @@ export class TaskRunnerService {
 
     taskRepo.recalculateProgress(task.id)
     const finalStatus = this.updateDestinationFinalStates(task)
-    const currentTask = taskRepo.getById(task.id) || task
-    const finalTask = { ...currentTask, status: finalStatus }
-    this.writeMarker(
-      task.folderPath,
-      this.createCompactMarker(finalTask, finalTask.destinations)
-    )
     return finalStatus
+  }
+
+  private async prepareUploadPlan(task: Task, stableChecks: number): Promise<UploadPipelineResult> {
+    const settings = getSettingsRepo().getAll()
+    const fileFilter = new FileFilterService(
+      task.profileSnapshot?.filter || settings.filter
+    )
+    const files: UploadPipelineResult['files'] = []
+    for await (const batch of fileFilter.scanFolderBatches(task.folderPath)) {
+      for (const file of batch) {
+        files.push({
+          relativePath: file.relativePath,
+          fileSize: file.size,
+          mtimeMs: file.mtimeMs
+        })
+      }
+    }
+    return {
+      uploadRootPath: task.folderPath,
+      files,
+      requiredStableChecks: stableChecks
+    }
   }
 
   private async reconcileBeforeUpload(
@@ -693,54 +693,6 @@ export class TaskRunnerService {
     return taskStatus
   }
 
-  private createCompactMarker(
-    task: Task,
-    destinations: Task['destinations']
-  ): ProcessTaskMarker {
-    const destinationRepo = getTaskDestinationRepo()
-    const taskSummary = getTaskRepo().summarizeFiles(task.id)
-    return {
-      version: 3,
-      taskId: task.id,
-      status: task.status,
-      totalFiles: taskSummary.totalFiles,
-      uploadedFiles: taskSummary.completedFiles,
-      failedFiles: taskSummary.failedFiles,
-      skippedFiles: taskSummary.skippedFiles,
-      lastUpdated: new Date().toISOString(),
-      error:
-        task.errorMessage ||
-        destinations
-          .map((destination) => destination.errorMessage)
-          .filter(Boolean)
-          .join(' || ') ||
-        null,
-      uploadTargetMode: task.uploadTargetMode,
-      destinations: Object.fromEntries(
-        destinations.map((destination) => {
-          const summary = destinationRepo.summarizeFileTargets(
-            task.id,
-            destination.provider
-          )
-          return [
-            destination.provider,
-            {
-              status: destination.status,
-              uploadRelativePath: destination.uploadRelativePath,
-              pathMode: destination.pathMode,
-              objectKeyTemplate: destination.objectKeyTemplate,
-              totalFiles: summary.total,
-              uploadedFiles: summary.uploaded,
-              failedFiles: summary.failed,
-              skippedFiles: summary.skipped,
-              error: destination.errorMessage
-            }
-          ]
-        })
-      )
-    }
-  }
-
   private broadcastProgress(
     taskId: string,
     provider: CloudProvider,
@@ -771,15 +723,6 @@ export class TaskRunnerService {
     }
     for (const win of BrowserWindow?.getAllWindows?.() ?? []) {
       win.webContents.send(IPC.TASK_PROGRESS, progress)
-    }
-  }
-
-  private writeMarker(folderPath: string, marker: ProcessTaskMarker): void {
-    if (!existsSync(folderPath)) return
-    try {
-      writeProcessTask(folderPath, marker)
-    } catch (error) {
-      log.warn('写入任务汇总标记失败:', folderPath, error)
     }
   }
 

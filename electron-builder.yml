@@ -1,4 +1,4 @@
-appId: com.uploader.app
+appId: com.cloudbridge.uploader
 productName: 云桥上传器
 directories:
   buildResources: resources
