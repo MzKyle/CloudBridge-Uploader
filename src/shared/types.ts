@@ -236,7 +236,6 @@ export interface TaskDestination {
   taskId: string
   connectionId: string
   connectionName: string | null
-  legacyProvider?: CloudProvider
   status: TaskStatus
   prefix: string
   uploadRelativePath: string
@@ -257,7 +256,6 @@ export interface TaskFileDestination {
   taskFileId: string
   taskDestinationId: string
   connectionId: string
-  legacyProvider?: CloudProvider
   status: FileStatus
   objectKey: string | null
   plannedObjectKey: string | null
@@ -363,7 +361,6 @@ export interface UploadGroupListQuery {
   includeCompleted?: boolean
   limit?: number
   connectionId?: string
-  provider?: CloudProvider
 }
 
 // ---- 设置 ----
@@ -462,7 +459,6 @@ export interface ScannerStatus {
 // ---- 历史记录 ----
 export interface HistoryItem {
   id: string
-  provider: CloudProvider
   connectionId: string
   connectionName: string | null
   folderName: string
@@ -477,7 +473,6 @@ export interface HistoryQuery {
   page: number
   pageSize: number
   connectionId?: string
-  provider?: CloudProvider
   status?: 'completed' | 'failed'
 }
 

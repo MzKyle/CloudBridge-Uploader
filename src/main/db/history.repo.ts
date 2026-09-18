@@ -1,10 +1,9 @@
 import { getDb } from './database'
-import type { CloudProvider, HistoryQuery, HistoryResult, HistoryItem } from '@shared/types'
+import type { HistoryQuery, HistoryResult, HistoryItem } from '@shared/types'
 
 function rowToHistory(row: Record<string, unknown>): HistoryItem {
   return {
     id: row.id as string,
-    provider: row.provider as CloudProvider,
     connectionId: row.connection_id as string,
     connectionName: (row.connection_name as string) || null,
     folderName: row.folder_name as string,
@@ -19,7 +18,7 @@ function rowToHistory(row: Record<string, unknown>): HistoryItem {
 export class HistoryRepo {
   list(query: HistoryQuery): HistoryResult {
     const db = getDb()
-    const { page, pageSize, status, provider, connectionId } = query
+    const { page, pageSize, status, connectionId } = query
     const offset = (page - 1) * pageSize
 
     let where =
@@ -28,9 +27,6 @@ export class HistoryRepo {
     if (connectionId) {
       where += ' AND td.connection_id = ?'
       params.push(connectionId)
-    } else if (provider) {
-      where += ' AND td.provider = ?'
-      params.push(provider)
     }
     if (status) {
       where += ' AND td.status = ?'
@@ -48,7 +44,7 @@ export class HistoryRepo {
 
     const rows = db
       .prepare(
-        `SELECT t.id, td.provider, td.connection_id, td.connection_name,
+        `SELECT t.id, td.connection_id, td.connection_name,
           t.folder_name, td.total_files, td.total_bytes,
           td.status, td.completed_at,
           CAST((julianday(td.completed_at) - julianday(td.created_at)) * 86400 AS INTEGER)
@@ -63,13 +59,11 @@ export class HistoryRepo {
     return { items: rows.map(rowToHistory), total }
   }
 
-  clear(before?: string, provider?: CloudProvider, connectionId?: string): void {
+  clear(before?: string, connectionId?: string): void {
     const db = getDb()
     const transaction = db.transaction(() => {
-      if (connectionId || provider) {
-        const scopeColumn = connectionId ? 'connection_id' : 'provider'
-        const scopeValue = connectionId || provider
-        const params: unknown[] = [scopeValue]
+      if (connectionId) {
+        const params: unknown[] = [connectionId]
         let beforeCondition = ''
         if (before) {
           beforeCondition = ' AND completed_at < ?'
@@ -77,7 +71,7 @@ export class HistoryRepo {
         }
         db.prepare(
           `DELETE FROM task_destinations
-           WHERE ${scopeColumn} = ?
+           WHERE connection_id = ?
              AND status IN ('completed', 'failed')
              AND completed_at IS NOT NULL${beforeCondition}`
         ).run(...params)
@@ -96,16 +90,14 @@ export class HistoryRepo {
     transaction()
   }
 
-  deleteById(id: string, provider?: CloudProvider, connectionId?: string): void {
+  deleteById(id: string, connectionId?: string): void {
     const db = getDb()
     const transaction = db.transaction(() => {
-      if (connectionId || provider) {
-        const scopeColumn = connectionId ? 'connection_id' : 'provider'
-        const scopeValue = connectionId || provider
+      if (connectionId) {
         db.prepare(
           `DELETE FROM task_destinations
-           WHERE task_id = ? AND ${scopeColumn} = ? AND status IN ('completed', 'failed')`
-        ).run(id, scopeValue)
+           WHERE task_id = ? AND connection_id = ? AND status IN ('completed', 'failed')`
+        ).run(id, connectionId)
         db.prepare(
           `DELETE FROM tasks
            WHERE id = ?

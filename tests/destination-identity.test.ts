@@ -92,6 +92,7 @@ test('two S3 connections create independent task and file destinations', () => {
       destinationRepo.listByTask(task.id).map((destination) => destination.connectionId),
       ['minio-a', 'minio-b']
     )
+    assert.equal('legacyProvider' in destinationRepo.listByTask(task.id)[0], false)
     assert.deepEqual(
       destinationRepo.listFileTargets(task.id).map((target) => ({
         taskFileId: target.taskFileId,
@@ -102,6 +103,7 @@ test('two S3 connections create independent task and file destinations', () => {
         { taskFileId: file.id, connectionId: 'minio-b' }
       ]
     )
+    assert.equal('legacyProvider' in destinationRepo.listFileTargets(task.id)[0], false)
   } finally {
     closeDatabase(db)
   }
@@ -184,7 +186,6 @@ test('duplicate object keys are isolated per connection', () => {
     taskId: 'task-1',
     connectionId: 'minio-a',
     connectionName: 'Minio A',
-    legacyProvider: 'tencent',
     status: 'pending',
     prefix: 'archive',
     uploadRelativePath: '',
@@ -215,7 +216,6 @@ test('duplicate object keys are isolated per connection', () => {
     taskFileId: `file-${id}`,
     taskDestinationId,
     connectionId,
-    legacyProvider: 'tencent',
     status: 'pending',
     objectKey: null,
     plannedObjectKey: null,

@@ -8,10 +8,7 @@ import type {
   TaskStatus,
   UploadPathMode
 } from '@shared/types'
-import {
-  deriveLogicalFileStatus,
-  legacyProviderForConnectionType
-} from '@shared/cloud-upload'
+import { deriveLogicalFileStatus } from '@shared/cloud-upload'
 import {
   DEFAULT_ALIYUN_CONNECTION_ID,
   DEFAULT_S3_CONNECTION_ID
@@ -22,7 +19,6 @@ export interface TaskDestinationCreateInput {
   connectionId: string
   connectionName?: string | null
   connectionType?: CloudConnectionType
-  legacyProvider?: CloudProvider
   prefix?: string
   uploadRelativePath?: string
   pathMode?: UploadPathMode
@@ -57,7 +53,6 @@ function rowToDestination(row: Record<string, unknown>): TaskDestination {
     taskId: row.task_id as string,
     connectionId: (row.connection_id as string) || legacyConnectionId(row.provider as CloudProvider),
     connectionName: (row.connection_name as string) || null,
-    legacyProvider: row.provider as CloudProvider,
     status: row.status as TaskStatus,
     prefix: (row.prefix as string) || '',
     uploadRelativePath: (row.upload_relative_path as string | null | undefined) ?? '',
@@ -80,7 +75,6 @@ function rowToFileDestination(row: Record<string, unknown>): TaskFileDestination
     taskFileId: row.task_file_id as string,
     taskDestinationId: row.task_destination_id as string,
     connectionId: (row.connection_id as string) || legacyConnectionId(row.provider as CloudProvider),
-    legacyProvider: row.provider as CloudProvider,
     status: row.status as FileStatus,
     objectKey: (row.object_key as string) || null,
     plannedObjectKey: (row.planned_object_key as string) || null,
@@ -117,7 +111,7 @@ export class TaskDestinationRepo {
         stmt.run(
           uuid(),
           taskId,
-          legacyProviderForDestination(destination),
+          storageProviderForDestination(destination),
           destination.connectionId,
           destination.connectionName || null,
           initialStatus,
@@ -569,12 +563,11 @@ function legacyConnectionId(provider: CloudProvider): string {
   return provider === 'aliyun' ? 'aliyun-prod' : 's3-compatible'
 }
 
-function legacyProviderForDestination(
+function storageProviderForDestination(
   destination: TaskDestinationCreateInput
 ): CloudProvider {
-  if (destination.legacyProvider) return destination.legacyProvider
   if (destination.connectionType) {
-    return legacyProviderForConnectionType(destination.connectionType)
+    return destination.connectionType === 'aliyun-oss' ? 'aliyun' : 'tencent'
   }
   if (destination.connectionId === DEFAULT_ALIYUN_CONNECTION_ID) return 'aliyun'
   if (destination.connectionId === DEFAULT_S3_CONNECTION_ID) return 'tencent'

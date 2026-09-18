@@ -1,7 +1,6 @@
 import { IPC } from '@shared/ipc-channels'
 import type {
   AppSettings,
-  CloudProvider,
   ConnectionTestInput,
   ConnectionTestResult,
   UploadGroupListQuery,
@@ -83,10 +82,9 @@ export async function fetchUploadGroups(query?: UploadGroupListQuery): Promise<U
 
 export async function deleteUploadGroupHistory(
   id: string,
-  provider?: CloudProvider,
   connectionId?: string
 ): Promise<void> {
-  await api.invoke(IPC.UPLOAD_GROUP_DELETE, { id, provider, connectionId })
+  await api.invoke(IPC.UPLOAD_GROUP_DELETE, { id, connectionId })
 }
 
 export async function ignoreUploadGroup(id: string): Promise<UploadGroupSummary> {
@@ -171,21 +169,19 @@ export async function fetchHistory(query: HistoryQuery): Promise<HistoryResult> 
 
 export async function clearHistory(
   before?: string,
-  provider?: CloudProvider,
   connectionId?: string
 ): Promise<void> {
   await api.invoke(
     IPC.HISTORY_CLEAR,
-    before || provider || connectionId ? { before, provider, connectionId } : undefined
+    before || connectionId ? { before, connectionId } : undefined
   )
 }
 
 export async function deleteHistoryItem(
   id: string,
-  provider?: CloudProvider,
   connectionId?: string
 ): Promise<void> {
-  await api.invoke(IPC.HISTORY_DELETE, { id, provider, connectionId })
+  await api.invoke(IPC.HISTORY_DELETE, { id, connectionId })
 }
 
 export async function selectFolder(): Promise<string | null> {

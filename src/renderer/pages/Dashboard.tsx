@@ -456,7 +456,7 @@ export default function Dashboard() {
     () =>
       buildPathTree<DashboardTreeItem>([
         ...uploadGroups.map((uploadGroup) => ({
-          id: `day:${uploadGroup.id}`,
+          id: `group:${uploadGroup.id}`,
           path: uploadGroup.folderPath,
           value: { kind: "uploadGroup" as const, uploadGroup },
         })),

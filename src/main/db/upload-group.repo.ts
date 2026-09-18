@@ -1,7 +1,6 @@
 import { join, normalize } from 'path'
 import { v4 as uuid } from 'uuid'
 import type {
-  CloudProvider,
   CompletionPolicy,
   UploadGroupListQuery,
   UploadGroupSummary,
@@ -183,17 +182,6 @@ export class UploadGroupRepo {
         )`
       )
       params.push(query.connectionId)
-    } else if (query.provider) {
-      conditions.push(
-        `EXISTS (
-          SELECT 1
-          FROM tasks t
-          INNER JOIN task_destinations td ON td.task_id = t.id
-          WHERE t.day_folder_id = day_folders.id
-            AND td.provider = ?
-        )`
-      )
-      params.push(query.provider)
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
@@ -441,13 +429,11 @@ export class UploadGroupRepo {
     return (incompleteFiles.count || 0) === 0
   }
 
-  clearCompleted(before?: string, provider?: CloudProvider, connectionId?: string): void {
+  clearCompleted(before?: string, connectionId?: string): void {
     const db = getDb()
-    if (connectionId || provider) {
+    if (connectionId) {
       const transaction = db.transaction(() => {
-        const scopeColumn = connectionId ? 'connection_id' : 'provider'
-        const scopeValue = connectionId || provider
-        const params: unknown[] = [scopeValue]
+        const params: unknown[] = [connectionId]
         let beforeCondition = ''
         if (before) {
           beforeCondition = ' AND df.completed_at < ?'
@@ -455,7 +441,7 @@ export class UploadGroupRepo {
         }
         db.prepare(
           `DELETE FROM task_destinations
-           WHERE ${scopeColumn} = ?
+           WHERE connection_id = ?
              AND task_id IN (
                SELECT t.id
                FROM tasks t
@@ -497,17 +483,15 @@ export class UploadGroupRepo {
     }
   }
 
-  deleteCompleted(id: string, provider?: CloudProvider, connectionId?: string): void {
+  deleteCompleted(id: string, connectionId?: string): void {
     const db = getDb()
-    if (connectionId || provider) {
+    if (connectionId) {
       const transaction = db.transaction(() => {
-        const scopeColumn = connectionId ? 'connection_id' : 'provider'
-        const scopeValue = connectionId || provider
         db.prepare(
           `DELETE FROM task_destinations
-           WHERE ${scopeColumn} = ?
+           WHERE connection_id = ?
              AND task_id IN (SELECT id FROM tasks WHERE day_folder_id = ?)`
-        ).run(scopeValue, id)
+        ).run(connectionId, id)
         db.prepare(
           `DELETE FROM tasks
            WHERE day_folder_id = ?

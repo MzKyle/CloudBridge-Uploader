@@ -7,7 +7,6 @@ import { IPC } from '@shared/ipc-channels'
 import type {
   AliyunOSSConnectionConfig,
   AppSettings,
-  CloudProvider,
   ConnectionTestInput,
   UploadGroupListQuery,
   DiskUsageInfo,
@@ -160,8 +159,8 @@ export function registerAllIpc(): void {
     return getUploadGroupRepo().list(query)
   })
 
-  ipcMain.handle(IPC.UPLOAD_GROUP_DELETE, (_event, args: { id: string; provider?: CloudProvider; connectionId?: string }) => {
-    getUploadGroupRepo().deleteCompleted(args.id, args.provider, args.connectionId)
+  ipcMain.handle(IPC.UPLOAD_GROUP_DELETE, (_event, args: { id: string; connectionId?: string }) => {
+    getUploadGroupRepo().deleteCompleted(args.id, args.connectionId)
   })
 
   ipcMain.handle(IPC.UPLOAD_GROUP_IGNORE, (_event, args: { id: string }) => {
@@ -301,12 +300,12 @@ export function registerAllIpc(): void {
   ipcMain.handle(IPC.HISTORY_LIST, (_event, query: HistoryQuery) => {
     return getHistoryRepo().list(query)
   })
-  ipcMain.handle(IPC.HISTORY_CLEAR, (_event, args?: { before?: string; provider?: CloudProvider; connectionId?: string }) => {
-    getHistoryRepo().clear(args?.before, args?.provider, args?.connectionId)
-    getUploadGroupRepo().clearCompleted(args?.before, args?.provider, args?.connectionId)
+  ipcMain.handle(IPC.HISTORY_CLEAR, (_event, args?: { before?: string; connectionId?: string }) => {
+    getHistoryRepo().clear(args?.before, args?.connectionId)
+    getUploadGroupRepo().clearCompleted(args?.before, args?.connectionId)
   })
-  ipcMain.handle(IPC.HISTORY_DELETE, (_event, args: { id: string; provider?: CloudProvider; connectionId?: string }) => {
-    getHistoryRepo().deleteById(args.id, args.provider, args.connectionId)
+  ipcMain.handle(IPC.HISTORY_DELETE, (_event, args: { id: string; connectionId?: string }) => {
+    getHistoryRepo().deleteById(args.id, args.connectionId)
   })
 
   ipcMain.handle(IPC.DIALOG_SELECT_FOLDER, async () => {

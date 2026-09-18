@@ -94,7 +94,7 @@ export default function History() {
   }, [load]);
 
   const performClear = useCallback(async () => {
-    await clearHistory(undefined, undefined, selectedConnectionQuery);
+    await clearHistory(undefined, selectedConnectionQuery);
     load();
   }, [load, selectedConnectionQuery]);
 
@@ -102,7 +102,7 @@ export default function History() {
     async (item: UploadGroupSummary) => {
       setDeletingId(item.id);
       try {
-        await deleteUploadGroupHistory(item.id, undefined, selectedConnectionQuery);
+        await deleteUploadGroupHistory(item.id, selectedConnectionQuery);
         await load();
       } finally {
         setDeletingId(null);
@@ -115,7 +115,7 @@ export default function History() {
     async (item: HistoryItem) => {
       setDeletingId(item.id);
       try {
-        await deleteHistoryItem(item.id, item.provider, item.connectionId);
+        await deleteHistoryItem(item.id, item.connectionId);
         if (items.length === 1 && page > 1) {
           setPage((p) => p - 1);
           return;

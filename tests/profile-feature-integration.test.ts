@@ -196,20 +196,19 @@ test('manual tasks persist V3 rule snapshots and connection destinations', () =>
     })
     assert.deepEqual(
       task.destinations.map((destination) => ({
-        legacyProvider: destination.legacyProvider,
         connectionId: destination.connectionId,
         connectionName: destination.connectionName,
         prefix: destination.prefix
       })),
       [
         {
-          legacyProvider: 'aliyun',
           connectionId: 'archive-oss',
           connectionName: 'Archive OSS',
           prefix: 'archive'
         }
       ]
     )
+    assert.equal('legacyProvider' in task.destinations[0], false)
   } finally {
     closeDatabase(db)
   }

@@ -261,13 +261,13 @@ test('retrying one cloud preserves an already synced destination', () => {
   repo.retry(task.id, 's3-compatible')
 
   assert.deepEqual(
-    destinationRepo.listByTask(task.id).map(({ legacyProvider, status }) => ({
-      provider: legacyProvider,
+    destinationRepo.listByTask(task.id).map(({ connectionId, status }) => ({
+      connectionId,
       status
     })),
     [
-      { provider: 'aliyun', status: 'synced' },
-      { provider: 'tencent', status: 'pending' }
+      { connectionId: 'aliyun-prod', status: 'synced' },
+      { connectionId: 's3-compatible', status: 'pending' }
     ]
   )
 

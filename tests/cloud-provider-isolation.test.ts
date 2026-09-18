@@ -27,6 +27,22 @@ function closeTestDb(db: Database.Database): void {
   db.close()
 }
 
+function listStoredDestinationProviders(
+  db: Database.Database,
+  taskId: string
+): Array<{ provider: string; connectionId: string; uploadRelativePath: string }> {
+  return db.prepare(
+    `SELECT provider, connection_id AS connectionId, upload_relative_path AS uploadRelativePath
+     FROM task_destinations
+     WHERE task_id = ?
+     ORDER BY connection_id`
+  ).all(taskId) as Array<{
+    provider: string
+    connectionId: string
+    uploadRelativePath: string
+  }>
+}
+
 function cloudDestinations(
   uploadRelativePath: string,
   prefixes: Partial<Record<'aliyun' | 'tencent', string>>
@@ -151,26 +167,29 @@ test('scanner task registration snapshots connection destinations', () => {
     )
 
     assert.deepEqual(
-      getTaskDestinationRepo().listByTask(bothTask.id).map((item) => item.legacyProvider),
-      ['aliyun', 'tencent']
-    )
-    assert.deepEqual(
       getTaskDestinationRepo().listByTask(bothTask.id).map((item) => ({
-        provider: item.legacyProvider,
         connectionId: item.connectionId,
         uploadRelativePath: item.uploadRelativePath
       })),
       [
-        { provider: 'aliyun', connectionId: 'aliyun-prod', uploadRelativePath: '2026-06-27/both' },
-        { provider: 'tencent', connectionId: 's3-compatible', uploadRelativePath: '2026-06-27/both' }
+        { connectionId: 'aliyun-prod', uploadRelativePath: '2026-06-27/both' },
+        { connectionId: 's3-compatible', uploadRelativePath: '2026-06-27/both' }
       ]
     )
+    assert.equal(
+      'legacyProvider' in getTaskDestinationRepo().listByTask(bothTask.id)[0],
+      false
+    )
+    assert.deepEqual(listStoredDestinationProviders(db, bothTask.id), [
+      { provider: 'aliyun', connectionId: 'aliyun-prod', uploadRelativePath: '2026-06-27/both' },
+      { provider: 'tencent', connectionId: 's3-compatible', uploadRelativePath: '2026-06-27/both' }
+    ])
   } finally {
     closeTestDb(db)
   }
 })
 
-test('history delete and clear are scoped to the selected provider', () => {
+test('history delete and clear are scoped to the selected connection', () => {
   const db = createTestDb()
   try {
     const task = getTaskRepo().create({
@@ -184,17 +203,17 @@ test('history delete and clear are scoped to the selected provider', () => {
     getTaskDestinationRepo().updateStatus(task.id, 'aliyun-prod', 'completed')
     getTaskDestinationRepo().updateStatus(task.id, 's3-compatible', 'completed')
 
-    assert.equal(getHistoryRepo().list({ page: 1, pageSize: 20, provider: 'aliyun' }).total, 1)
-    assert.equal(getHistoryRepo().list({ page: 1, pageSize: 20, provider: 'tencent' }).total, 1)
+    assert.equal(getHistoryRepo().list({ page: 1, pageSize: 20, connectionId: 'aliyun-prod' }).total, 1)
+    assert.equal(getHistoryRepo().list({ page: 1, pageSize: 20, connectionId: 's3-compatible' }).total, 1)
 
-    getHistoryRepo().deleteById(task.id, 'aliyun')
+    getHistoryRepo().deleteById(task.id, 'aliyun-prod')
     assert.deepEqual(
-      getTaskDestinationRepo().listByTask(task.id).map((item) => item.legacyProvider),
-      ['tencent']
+      getTaskDestinationRepo().listByTask(task.id).map((item) => item.connectionId),
+      ['s3-compatible']
     )
     assert.equal(getTaskRepo().getById(task.id)?.id, task.id)
 
-    getHistoryRepo().deleteById(task.id, 'tencent')
+    getHistoryRepo().deleteById(task.id, 's3-compatible')
     assert.equal(getTaskRepo().getById(task.id), null)
 
     const aliyunOnly = getTaskRepo().create({
@@ -216,7 +235,7 @@ test('history delete and clear are scoped to the selected provider', () => {
     getTaskDestinationRepo().updateStatus(aliyunOnly.id, 'aliyun-prod', 'completed')
     getTaskDestinationRepo().updateStatus(tencentOnly.id, 's3-compatible', 'completed')
 
-    getHistoryRepo().clear(undefined, 'aliyun')
+    getHistoryRepo().clear(undefined, 'aliyun-prod')
     assert.equal(getTaskRepo().getById(aliyunOnly.id), null)
     assert.equal(getTaskRepo().getById(tencentOnly.id)?.id, tencentOnly.id)
   } finally {
@@ -224,7 +243,7 @@ test('history delete and clear are scoped to the selected provider', () => {
   }
 })
 
-test('upload group summaries can be filtered and deleted by legacy provider', () => {
+test('upload group summaries can be filtered and deleted by connection', () => {
   const db = createTestDb()
   try {
     const uploadGroup = getUploadGroupRepo().ensure('/data/2026-06-27', '2026-06-27')
@@ -243,15 +262,15 @@ test('upload group summaries can be filtered and deleted by legacy provider', ()
       "UPDATE day_folders SET status = 'completed', completed_at = ? WHERE id = ?"
     ).run(new Date().toISOString(), uploadGroup.id)
 
-    assert.equal(getUploadGroupRepo().list({ provider: 'aliyun' }).length, 1)
-    assert.equal(getUploadGroupRepo().list({ provider: 'tencent' }).length, 1)
+    assert.equal(getUploadGroupRepo().list({ connectionId: 'aliyun-prod' }).length, 1)
+    assert.equal(getUploadGroupRepo().list({ connectionId: 's3-compatible' }).length, 1)
 
-    getUploadGroupRepo().deleteCompleted(uploadGroup.id, 'aliyun')
-    assert.equal(getUploadGroupRepo().list({ provider: 'aliyun' }).length, 0)
-    assert.equal(getUploadGroupRepo().list({ provider: 'tencent' }).length, 1)
+    getUploadGroupRepo().deleteCompleted(uploadGroup.id, 'aliyun-prod')
+    assert.equal(getUploadGroupRepo().list({ connectionId: 'aliyun-prod' }).length, 0)
+    assert.equal(getUploadGroupRepo().list({ connectionId: 's3-compatible' }).length, 1)
     assert.equal(getUploadGroupRepo().getById(uploadGroup.id)?.id, uploadGroup.id)
 
-    getUploadGroupRepo().deleteCompleted(uploadGroup.id, 'tencent')
+    getUploadGroupRepo().deleteCompleted(uploadGroup.id, 's3-compatible')
     assert.equal(getUploadGroupRepo().getById(uploadGroup.id), null)
   } finally {
     closeTestDb(db)
