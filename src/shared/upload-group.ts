@@ -1,6 +1,6 @@
 import type {
   CompletionPolicy,
-  DayFolderStatus,
+  UploadGroupProcessingStatus,
   TaskStatus,
   UploadGroupStatus
 } from './types'
@@ -128,10 +128,10 @@ export function deriveUploadGroupStatus(input: {
   return input.currentStatus === 'closing' ? 'closing' : 'open'
 }
 
-export function uploadGroupStatusToDayFolderStatus(
+export function uploadGroupStatusToUploadGroupProcessingStatus(
   status: UploadGroupStatus,
   taskStatuses: Array<TaskStatus | null>
-): DayFolderStatus {
+): UploadGroupProcessingStatus {
   if (status === 'error') return 'blocked'
   if (status === 'sealed' || status === 'cleanable' || status === 'cleaned') {
     return taskStatuses.some((taskStatus) => taskStatus === 'skipped')
@@ -153,7 +153,7 @@ export function uploadGroupStatusToDayFolderStatus(
   return 'collecting'
 }
 
-export function mapLegacyDayFolderStatus(status: DayFolderStatus): UploadGroupStatus {
+export function mapLegacyUploadGroupProcessingStatus(status: UploadGroupProcessingStatus): UploadGroupStatus {
   if (status === 'completed' || status === 'completed_with_skips') return 'sealed'
   if (status === 'blocked') return 'error'
   if (status === 'processing') return 'closing'

@@ -3,7 +3,7 @@ import { app } from 'electron'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import log from 'electron-log'
-import { deriveDateScopedUploadRelativePath } from '@shared/day-folder'
+import { deriveDateScopedUploadRelativePath } from '@shared/legacy-date-folder'
 
 let db: Database.Database | null = null
 
@@ -271,12 +271,12 @@ export function runMigrations(db: Database.Database): void {
   `)
   migrateDestinationIdentityConstraints(db)
 
-  const dayFolderColumns = db.pragma('table_info(day_folders)') as Array<{ name: string }>
-  if (!dayFolderColumns.some((c) => c.name === 'ignored')) {
+  const uploadGroupColumns = db.pragma('table_info(day_folders)') as Array<{ name: string }>
+  if (!uploadGroupColumns.some((c) => c.name === 'ignored')) {
     db.exec(`ALTER TABLE day_folders ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0`)
     log.info('迁移: day_folders 表添加 ignored 列')
   }
-  const dayFolderAdditions = [
+  const uploadGroupAdditions = [
     ['profile_id', 'TEXT'],
     ['group_key', 'TEXT'],
     ['variables_json', `TEXT NOT NULL DEFAULT '{}'`],
@@ -287,8 +287,8 @@ export function runMigrations(db: Database.Database): void {
     ['cleanable_at', 'TEXT'],
     ['cleaned_at', 'TEXT']
   ] as const
-  for (const [name, definition] of dayFolderAdditions) {
-    if (!dayFolderColumns.some((column) => column.name === name)) {
+  for (const [name, definition] of uploadGroupAdditions) {
+    if (!uploadGroupColumns.some((column) => column.name === name)) {
       db.exec(`ALTER TABLE day_folders ADD COLUMN ${name} ${definition}`)
       log.info(`迁移: day_folders 表添加 ${name} 列`)
     }

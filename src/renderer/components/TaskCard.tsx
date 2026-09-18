@@ -14,11 +14,10 @@ import { Badge } from "@/components/ui/badge";
 import { Tooltip } from "@/components/ui/tooltip";
 import { formatBytes, formatSpeed } from "@/lib/utils";
 import type {
-  CloudProvider,
   Task,
   TaskProgress,
 } from "@shared/types";
-import { CLOUD_PROVIDER_LABELS, TASK_STATUS_LABELS } from "@shared/constants";
+import { TASK_STATUS_LABELS } from "@shared/constants";
 
 const STATUS_VARIANT: Record<
   string,
@@ -37,7 +36,7 @@ const STATUS_VARIANT: Record<
 
 interface TaskCardProps {
   task: Task;
-  provider: CloudProvider;
+  selectedConnectionId: "all" | string;
   progress?: TaskProgress;
   onPause: (id: string) => void;
   onResume: (id: string) => void;
@@ -49,7 +48,7 @@ interface TaskCardProps {
 
 export function TaskCard({
   task,
-  provider,
+  selectedConnectionId,
   progress,
   onPause,
   onResume,
@@ -58,18 +57,27 @@ export function TaskCard({
   onRestore,
   onOpenDetail,
 }: TaskCardProps) {
-  const destination = task.destinations.find((item) => item.legacyProvider === provider);
-  if (!destination) return null;
-  const status = destination.status;
-  const uploadedFiles = progress?.uploadedFiles ?? destination.uploadedFiles;
-  const totalFiles = progress?.totalFiles ?? destination.totalFiles;
-  const uploadedBytes = progress?.uploadedBytes ?? destination.uploadedBytes;
-  const totalBytes = progress?.totalBytes ?? destination.totalBytes;
+  const destinations =
+    selectedConnectionId === "all"
+      ? task.destinations
+      : task.destinations.filter((item) => item.connectionId === selectedConnectionId);
+  if (destinations.length === 0) return null;
+  const destination =
+    selectedConnectionId === "all" ? undefined : destinations[0];
+  const retryDestination =
+    destination?.status === "failed"
+      ? destination
+      : destinations.find((item) => item.status === "failed");
+  const status = destination?.status ?? task.status;
+  const uploadedFiles = progress?.uploadedFiles ?? destination?.uploadedFiles ?? task.uploadedFiles;
+  const totalFiles = progress?.totalFiles ?? destination?.totalFiles ?? task.totalFiles;
+  const uploadedBytes = progress?.uploadedBytes ?? destination?.uploadedBytes ?? task.uploadedBytes;
+  const totalBytes = progress?.totalBytes ?? destination?.totalBytes ?? task.totalBytes;
   const speed = progress?.speed ?? 0;
   const percent = totalFiles > 0 ? (uploadedFiles / totalFiles) * 100 : 0;
   const isIgnoredDirectory =
     task.status === "skipped" && task.errorMessage === "非任务目录";
-  const errorText = destination.errorMessage || task.errorMessage;
+  const errorText = destination?.errorMessage || task.errorMessage;
   const canSkip =
     task.status === "pending" ||
     task.status === "scanning" ||
@@ -103,9 +111,11 @@ export function TaskCard({
                 ? "已忽略目录"
                 : TASK_STATUS_LABELS[status] || status}
             </Badge>
-            <span className="text-xs text-muted-foreground">
-              {destination.connectionName || CLOUD_PROVIDER_LABELS[provider]}
-            </span>
+            {destination && (
+              <span className="text-xs text-muted-foreground">
+                {destination.connectionName || destination.connectionId}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-1 flex-shrink-0">
             {task.status === "uploading" && status === "uploading" && (
@@ -140,7 +150,7 @@ export function TaskCard({
                 </Button>
               </Tooltip>
             )}
-            {status === "failed" && (
+            {retryDestination && (
               <Tooltip content="重试此云端">
                 <Button
                   variant="ghost"
@@ -149,7 +159,7 @@ export function TaskCard({
                   title="重试此云端"
                   onClick={(event) => {
                     event.stopPropagation();
-                    onRetry(task.id, destination.connectionId);
+                    onRetry(task.id, retryDestination.connectionId);
                   }}
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
@@ -233,6 +243,19 @@ export function TaskCard({
             }`}
           >
             {isIgnoredDirectory ? "说明" : "错误"}: {errorText}
+          </div>
+        )}
+
+        {selectedConnectionId === "all" && destinations.length > 1 && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {destinations.map((item) => (
+              <Badge
+                key={item.connectionId}
+                variant={STATUS_VARIANT[item.status] || "secondary"}
+              >
+                {(item.connectionName || item.connectionId)} · {TASK_STATUS_LABELS[item.status] || item.status}
+              </Badge>
+            ))}
           </div>
         )}
 

@@ -16,7 +16,7 @@ export type TaskStatus =
 export type FileStatus = 'pending' | 'uploading' | 'completed' | 'failed' | 'skipped'
 export type SourceType = 'local' | 'manual'
 export type FileSourceStatus = 'present' | 'missing'
-export type DayFolderStatus =
+export type UploadGroupProcessingStatus =
   | 'collecting'
   | 'processing'
   | 'blocked'
@@ -25,7 +25,6 @@ export type DayFolderStatus =
 export type CloudProvider = 'aliyun' | 'tencent'
 export type UploadPathMode =
   | 'target-root'
-  | 'date-workdir'
   | 'keep-source'
   | 'last-segments'
   | 'template'
@@ -190,7 +189,7 @@ export interface Task {
   uploadedBytes: number
   ossPrefix: string
   destinations: TaskDestination[]
-  dayFolderId: string | null
+  uploadGroupId: string | null
   uploadRelativePath: string
   errorMessage: string | null
   sourceType: SourceType
@@ -310,7 +309,7 @@ export interface TaskListQuery {
 export interface UploadQueueStartInput {
   scope: UploadQueueStartScope
   taskIds?: string[]
-  dayFolderIds?: string[]
+  uploadGroupIds?: string[]
   overrideWindow?: boolean
 }
 
@@ -332,12 +331,12 @@ export interface UploadQueueStatus {
   }
 }
 
-export interface DayFolderSummary {
+export interface UploadGroupSummary {
   id: string
   folderPath: string
   folderName: string
-  date: string
-  status: DayFolderStatus
+  legacyDate: string | null
+  status: UploadGroupProcessingStatus
   ruleId: string | null
   groupKey: string
   variables: PathVariables
@@ -359,10 +358,11 @@ export interface DayFolderSummary {
   ignored: boolean
 }
 
-export interface DayFolderListQuery {
-  status?: DayFolderStatus
+export interface UploadGroupListQuery {
+  status?: UploadGroupProcessingStatus
   includeCompleted?: boolean
   limit?: number
+  connectionId?: string
   provider?: CloudProvider
 }
 
@@ -476,6 +476,7 @@ export interface HistoryItem {
 export interface HistoryQuery {
   page: number
   pageSize: number
+  connectionId?: string
   provider?: CloudProvider
   status?: 'completed' | 'failed'
 }

@@ -4,8 +4,8 @@ import type {
   CloudProvider,
   ConnectionTestInput,
   ConnectionTestResult,
-  DayFolderListQuery,
-  DayFolderSummary,
+  UploadGroupListQuery,
+  UploadGroupSummary,
   DiskUsageInfo,
   HistoryQuery,
   HistoryResult,
@@ -77,24 +77,28 @@ export async function stopUploadQueue(input: UploadQueueStopInput): Promise<Uplo
   return (await api.invoke(IPC.UPLOAD_QUEUE_STOP, input)) as UploadQueueStatus
 }
 
-export async function fetchDayFolders(query?: DayFolderListQuery): Promise<DayFolderSummary[]> {
-  return (await api.invoke(IPC.DAY_FOLDER_LIST, query)) as DayFolderSummary[]
+export async function fetchUploadGroups(query?: UploadGroupListQuery): Promise<UploadGroupSummary[]> {
+  return (await api.invoke(IPC.UPLOAD_GROUP_LIST, query)) as UploadGroupSummary[]
 }
 
-export async function deleteDayFolderHistory(id: string, provider?: CloudProvider): Promise<void> {
-  await api.invoke(IPC.DAY_FOLDER_DELETE, { id, provider })
+export async function deleteUploadGroupHistory(
+  id: string,
+  provider?: CloudProvider,
+  connectionId?: string
+): Promise<void> {
+  await api.invoke(IPC.UPLOAD_GROUP_DELETE, { id, provider, connectionId })
 }
 
-export async function ignoreDayFolder(id: string): Promise<DayFolderSummary> {
-  return (await api.invoke(IPC.DAY_FOLDER_IGNORE, { id })) as DayFolderSummary
+export async function ignoreUploadGroup(id: string): Promise<UploadGroupSummary> {
+  return (await api.invoke(IPC.UPLOAD_GROUP_IGNORE, { id })) as UploadGroupSummary
 }
 
-export async function restoreDayFolder(id: string): Promise<DayFolderSummary> {
-  return (await api.invoke(IPC.DAY_FOLDER_RESTORE, { id })) as DayFolderSummary
+export async function restoreUploadGroup(id: string): Promise<UploadGroupSummary> {
+  return (await api.invoke(IPC.UPLOAD_GROUP_RESTORE, { id })) as UploadGroupSummary
 }
 
-export async function closeUploadGroup(id: string): Promise<DayFolderSummary> {
-  return (await api.invoke(IPC.UPLOAD_GROUP_CLOSE, { id })) as DayFolderSummary
+export async function closeUploadGroup(id: string): Promise<UploadGroupSummary> {
+  return (await api.invoke(IPC.UPLOAD_GROUP_CLOSE, { id })) as UploadGroupSummary
 }
 
 export async function getScannerStatus(): Promise<ScannerStatus> {
@@ -165,12 +169,23 @@ export async function fetchHistory(query: HistoryQuery): Promise<HistoryResult> 
   return (await api.invoke(IPC.HISTORY_LIST, query)) as HistoryResult
 }
 
-export async function clearHistory(before?: string, provider?: CloudProvider): Promise<void> {
-  await api.invoke(IPC.HISTORY_CLEAR, before || provider ? { before, provider } : undefined)
+export async function clearHistory(
+  before?: string,
+  provider?: CloudProvider,
+  connectionId?: string
+): Promise<void> {
+  await api.invoke(
+    IPC.HISTORY_CLEAR,
+    before || provider || connectionId ? { before, provider, connectionId } : undefined
+  )
 }
 
-export async function deleteHistoryItem(id: string, provider?: CloudProvider): Promise<void> {
-  await api.invoke(IPC.HISTORY_DELETE, { id, provider })
+export async function deleteHistoryItem(
+  id: string,
+  provider?: CloudProvider,
+  connectionId?: string
+): Promise<void> {
+  await api.invoke(IPC.HISTORY_DELETE, { id, provider, connectionId })
 }
 
 export async function selectFolder(): Promise<string | null> {

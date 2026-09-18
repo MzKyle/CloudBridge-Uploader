@@ -3,18 +3,18 @@ import { Button } from "@/components/ui/button";
 
 interface BulkActionBarProps {
   selectedTaskCount: number;
-  selectedDayFolderCount: number;
+  selectedUploadGroupCount: number;
   onStartSelected: () => void;
   onClearSelection: () => void;
 }
 
 export function BulkActionBar({
   selectedTaskCount,
-  selectedDayFolderCount,
+  selectedUploadGroupCount,
   onStartSelected,
   onClearSelection,
 }: BulkActionBarProps) {
-  const selectedCount = selectedTaskCount + selectedDayFolderCount;
+  const selectedCount = selectedTaskCount + selectedUploadGroupCount;
   if (selectedCount === 0) return null;
 
   return (
@@ -22,7 +22,7 @@ export function BulkActionBar({
       <div className="text-sm">
         已选择 <span className="font-semibold">{selectedCount}</span> 项
         <span className="ml-2 text-xs text-muted-foreground">
-          任务 {selectedTaskCount} · 日期 {selectedDayFolderCount}
+          任务 {selectedTaskCount} · 归档组 {selectedUploadGroupCount}
         </span>
       </div>
       <div className="flex items-center gap-2">

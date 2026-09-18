@@ -1,4 +1,5 @@
-import type { DayFolderStatus, TaskStatus } from './types'
+import type { UploadGroupProcessingStatus, TaskStatus } from './types'
+import { buildUploadRelativePath } from './upload-path'
 
 const DATE_FOLDER_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
 
@@ -36,11 +37,11 @@ export function isDateFolderBeforeToday(name: string, now = new Date()): boolean
   return folderDate.getTime() < today.getTime()
 }
 
-export function determineDayFolderStatus(
+export function determineUploadGroupProcessingStatus(
   dateName: string,
   childStatuses: Array<TaskStatus | null>,
   now = new Date()
-): DayFolderStatus {
+): UploadGroupProcessingStatus {
   if (childStatuses.some((status) => status === 'failed' || status === 'paused')) {
     return 'blocked'
   }
@@ -74,18 +75,6 @@ export function determineDayFolderStatus(
   }
 
   return 'collecting'
-}
-
-export function joinOssPath(...parts: Array<string | null | undefined>): string {
-  return parts
-    .flatMap((part) => (part || '').replace(/\\/g, '/').split('/'))
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0 && part !== '.')
-    .join('/')
-}
-
-export function buildUploadRelativePath(dateFolder: string, childFolder: string): string {
-  return joinOssPath(dateFolder, childFolder)
 }
 
 function pathSegments(directoryPath: string): string[] {
@@ -131,12 +120,4 @@ export function resolveDirectoryUploadRelativePath(
     ? pathSegments(fallbackDirectoryPath).at(-1)
     : null
   return primaryFolderName || fallbackFolderName || ''
-}
-
-export function buildOssKey(
-  prefix: string,
-  uploadRelativePath: string,
-  fileRelativePath: string
-): string {
-  return joinOssPath(prefix, uploadRelativePath, fileRelativePath)
 }

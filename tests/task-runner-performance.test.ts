@@ -26,7 +26,7 @@ function closeDatabase(db: Database.Database): void {
   db.close()
 }
 
-function insertDayFolder(
+function insertLegacyUploadGroup(
   db: Database.Database,
   id: string,
   dateValue = '2026-06-30'
@@ -187,25 +187,25 @@ test('continuous monitor id listing avoids destination hydration', () => {
   let destinationBatchLoads = 0
 
   try {
-    insertDayFolder(db, 'day-1')
-    insertDayFolder(db, 'day-2', '2026-07-01')
+    insertLegacyUploadGroup(db, 'day-1')
+    insertLegacyUploadGroup(db, 'day-2', '2026-07-01')
     const pending = repo.create({
       folderPath: '/data/day-1/work-pending',
       folderName: 'work-pending',
-      dayFolderId: 'day-1',
+      uploadGroupId: 'day-1',
       uploadRelativePath: 'day-1/work-pending'
     })
     const skipped = repo.create({
       folderPath: '/data/day-1/work-skipped',
       folderName: 'work-skipped',
-      dayFolderId: 'day-1',
+      uploadGroupId: 'day-1',
       uploadRelativePath: 'day-1/work-skipped'
     })
     repo.skip(skipped.id)
     repo.create({
       folderPath: '/data/day-2/work-other',
       folderName: 'work-other',
-      dayFolderId: 'day-2',
+      uploadGroupId: 'day-2',
       uploadRelativePath: 'day-2/work-other'
     })
 
@@ -330,7 +330,7 @@ test('object key validation reuses task-level path context', () => {
     uploadedBytes: 0,
     ossPrefix: '',
     destinations: [],
-    dayFolderId: 'day-1',
+    uploadGroupId: 'day-1',
     uploadRelativePath: '2026-06-30/work-1',
     errorMessage: null,
     sourceType: 'local',

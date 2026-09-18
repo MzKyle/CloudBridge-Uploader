@@ -1,13 +1,12 @@
 import { Clock, PlayCircle, ShieldAlert, TimerReset } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { CLOUD_PROVIDER_LABELS } from "@shared/constants";
-import type { CloudProvider, UploadQueueStatus } from "@shared/types";
+import type { UploadQueueStatus } from "@shared/types";
 
 interface QueueStatusBarProps {
   status: UploadQueueStatus | null;
-  provider: CloudProvider;
+  selectedConnectionName: string;
   taskCount: number;
-  dayFolderCount: number;
+  uploadGroupCount: number;
 }
 
 function formatWindow(status: UploadQueueStatus | null): string {
@@ -23,9 +22,9 @@ function formatWindow(status: UploadQueueStatus | null): string {
 
 export function QueueStatusBar({
   status,
-  provider,
+  selectedConnectionName,
   taskCount,
-  dayFolderCount,
+  uploadGroupCount,
 }: QueueStatusBarProps) {
   const runningCount = status?.runningTaskIds.length ?? 0;
   const gateOpen = status?.gateOpen ?? false;
@@ -84,7 +83,7 @@ export function QueueStatusBar({
         <div>
           <div className="text-xs text-muted-foreground">当前视图</div>
           <div className="text-sm font-medium">
-            {CLOUD_PROVIDER_LABELS[provider]} · {dayFolderCount} 日期 / {taskCount} 任务
+            {selectedConnectionName} · {uploadGroupCount} 组 / {taskCount} 任务
           </div>
         </div>
       </div>

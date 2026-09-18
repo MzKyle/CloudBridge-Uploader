@@ -3,8 +3,8 @@ import { v4 as uuid } from 'uuid'
 import type {
   CloudProvider,
   CompletionPolicy,
-  DayFolderListQuery,
-  DayFolderSummary,
+  UploadGroupListQuery,
+  UploadGroupSummary,
   PathVariables,
   Task,
   UploadGroupStatus
@@ -12,14 +12,14 @@ import type {
 import {
   assertUploadGroupTransition,
   deriveUploadGroupStatus,
-  mapLegacyDayFolderStatus,
-  uploadGroupStatusToDayFolderStatus
+  mapLegacyUploadGroupProcessingStatus,
+  uploadGroupStatusToUploadGroupProcessingStatus
 } from '@shared/upload-group'
 import { getDb } from './database'
 import { getTaskRepo } from './task.repo'
 import { getSettingsRepo } from './settings.repo'
 
-interface DayFolderRecord extends DayFolderSummary {
+interface UploadGroupRecord extends UploadGroupSummary {
   childFolders: string[]
 }
 
@@ -58,7 +58,7 @@ function arraysEqual(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index])
 }
 
-function rowToRecord(row: Record<string, unknown>): DayFolderRecord {
+function rowToRecord(row: Record<string, unknown>): UploadGroupRecord {
   let childFolders: string[] = []
   try {
     const parsed = JSON.parse((row.child_folders_json as string) || '[]')
@@ -68,13 +68,14 @@ function rowToRecord(row: Record<string, unknown>): DayFolderRecord {
   } catch {
     childFolders = []
   }
+  const legacyDate = (row.date_value as string) || ''
   const variables = safeParseVariables(row.variables_json, {
-    date: (row.date_value as string) || ''
+    date: legacyDate
   })
-  const legacyStatus = row.status as DayFolderSummary['status']
+  const legacyStatus = row.status as UploadGroupSummary['status']
   const uploadGroupStatus =
     (row.upload_group_status as UploadGroupStatus | undefined) ||
-    mapLegacyDayFolderStatus(legacyStatus)
+    mapLegacyUploadGroupProcessingStatus(legacyStatus)
   const discoveredAt = (row.discovered_at as string) || (row.created_at as string)
   const lastContentActivityAt =
     (row.last_content_activity_at as string) ||
@@ -86,10 +87,10 @@ function rowToRecord(row: Record<string, unknown>): DayFolderRecord {
     id: row.id as string,
     folderPath: row.folder_path as string,
     folderName: row.folder_name as string,
-    date: row.date_value as string,
+    legacyDate: legacyDate || null,
     status: legacyStatus,
     ruleId: (row.profile_id as string) || null,
-    groupKey: (row.group_key as string) || (row.date_value as string),
+    groupKey: (row.group_key as string) || legacyDate,
     variables,
     uploadGroupStatus,
     discoveredAt,
@@ -111,13 +112,13 @@ function rowToRecord(row: Record<string, unknown>): DayFolderRecord {
   }
 }
 
-export class DayFolderRepo {
+export class UploadGroupRepo {
   ensure(
     folderPath: string,
     groupKey: string,
     variables: PathVariables = { date: groupKey },
     ruleId?: string | null
-  ): DayFolderSummary {
+  ): UploadGroupSummary {
     const existing = this.getRecordByPath(folderPath)
     if (existing) {
       this.updateGroupMetadata(existing.id, groupKey, variables, ruleId ?? existing.ruleId)
@@ -150,17 +151,17 @@ export class DayFolderRepo {
     return this.getById(id)!
   }
 
-  getById(id: string): DayFolderSummary | null {
+  getById(id: string): UploadGroupSummary | null {
     const record = this.getRecordById(id)
     return record ? this.toSummary(record) : null
   }
 
-  getByPath(folderPath: string): DayFolderSummary | null {
+  getByPath(folderPath: string): UploadGroupSummary | null {
     const record = this.getRecordByPath(folderPath)
     return record ? this.toSummary(record) : null
   }
 
-  list(query: DayFolderListQuery = {}): DayFolderSummary[] {
+  list(query: UploadGroupListQuery = {}): UploadGroupSummary[] {
     const db = getDb()
     const conditions: string[] = []
     const params: unknown[] = []
@@ -171,7 +172,18 @@ export class DayFolderRepo {
     } else if (query.includeCompleted === false) {
       conditions.push("status NOT IN ('completed', 'completed_with_skips')")
     }
-    if (query.provider) {
+    if (query.connectionId) {
+      conditions.push(
+        `EXISTS (
+          SELECT 1
+          FROM tasks t
+          INNER JOIN task_destinations td ON td.task_id = t.id
+          WHERE t.day_folder_id = day_folders.id
+            AND td.connection_id = ?
+        )`
+      )
+      params.push(query.connectionId)
+    } else if (query.provider) {
       conditions.push(
         `EXISTS (
           SELECT 1
@@ -276,11 +288,11 @@ export class DayFolderRepo {
     ).run(nextStatus, nextStatus, now, nextStatus, now, nextStatus, now, now, id)
   }
 
-  recalculate(id: string, now = new Date()): DayFolderSummary | null {
+  recalculate(id: string, now = new Date()): UploadGroupSummary | null {
     const record = this.getRecordById(id)
     if (!record) return null
 
-    const tasks = getTaskRepo().listByDayFolder(id)
+    const tasks = getTaskRepo().listByUploadGroup(id)
     const latestByPath = new Map<string, Task>()
     for (const task of tasks) {
       const normalizedPath = normalizeFolderPath(task.folderPath)
@@ -306,7 +318,7 @@ export class DayFolderRepo {
     })
     const status = record.ignored
       ? 'completed_with_skips'
-      : uploadGroupStatusToDayFolderStatus(uploadGroupStatus, childStatuses)
+      : uploadGroupStatusToUploadGroupProcessingStatus(uploadGroupStatus, childStatuses)
     const completedChildren = childTasks.filter(
       (task) =>
         task?.status === 'completed' ||
@@ -363,7 +375,7 @@ export class DayFolderRepo {
       expectedPaths.add(normalizeFolderPath(record.folderPath))
     }
     const latestByPath = new Map<string, Task>()
-    for (const task of getTaskRepo().listByDayFolder(id)) {
+    for (const task of getTaskRepo().listByUploadGroup(id)) {
       const path = normalizeFolderPath(task.folderPath)
       if (expectedPaths.has(path) && !latestByPath.has(path)) {
         latestByPath.set(path, task)
@@ -374,7 +386,7 @@ export class DayFolderRepo {
       .filter((task): task is Task => Boolean(task))
   }
 
-  getCompletedForCleanup(retentionDays: number): DayFolderSummary[] {
+  getCompletedForCleanup(retentionDays: number): UploadGroupSummary[] {
     const cutoff = new Date(Date.now() - retentionDays * 86400000).toISOString()
     const rows = getDb().prepare(
       `SELECT * FROM day_folders
@@ -386,7 +398,7 @@ export class DayFolderRepo {
     return rows.map((row) => this.toSummary(rowToRecord(row)))
   }
 
-  listCleanupCandidates(): DayFolderSummary[] {
+  listCleanupCandidates(): UploadGroupSummary[] {
     const rows = getDb().prepare(
       `SELECT * FROM day_folders
        WHERE upload_group_status IN ('sealed', 'cleanable')
@@ -429,11 +441,13 @@ export class DayFolderRepo {
     return (incompleteFiles.count || 0) === 0
   }
 
-  clearCompleted(before?: string, provider?: CloudProvider): void {
+  clearCompleted(before?: string, provider?: CloudProvider, connectionId?: string): void {
     const db = getDb()
-    if (provider) {
+    if (connectionId || provider) {
       const transaction = db.transaction(() => {
-        const params: unknown[] = [provider]
+        const scopeColumn = connectionId ? 'connection_id' : 'provider'
+        const scopeValue = connectionId || provider
+        const params: unknown[] = [scopeValue]
         let beforeCondition = ''
         if (before) {
           beforeCondition = ' AND df.completed_at < ?'
@@ -441,7 +455,7 @@ export class DayFolderRepo {
         }
         db.prepare(
           `DELETE FROM task_destinations
-           WHERE provider = ?
+           WHERE ${scopeColumn} = ?
              AND task_id IN (
                SELECT t.id
                FROM tasks t
@@ -483,15 +497,17 @@ export class DayFolderRepo {
     }
   }
 
-  deleteCompleted(id: string, provider?: CloudProvider): void {
+  deleteCompleted(id: string, provider?: CloudProvider, connectionId?: string): void {
     const db = getDb()
-    if (provider) {
+    if (connectionId || provider) {
       const transaction = db.transaction(() => {
+        const scopeColumn = connectionId ? 'connection_id' : 'provider'
+        const scopeValue = connectionId || provider
         db.prepare(
           `DELETE FROM task_destinations
-           WHERE provider = ?
+           WHERE ${scopeColumn} = ?
              AND task_id IN (SELECT id FROM tasks WHERE day_folder_id = ?)`
-        ).run(provider, id)
+        ).run(scopeValue, id)
         db.prepare(
           `DELETE FROM tasks
            WHERE day_folder_id = ?
@@ -528,14 +544,14 @@ export class DayFolderRepo {
     ).run(ignored ? 1 : 0, new Date().toISOString(), id)
   }
 
-  private getRecordById(id: string): DayFolderRecord | null {
+  private getRecordById(id: string): UploadGroupRecord | null {
     const row = getDb().prepare('SELECT * FROM day_folders WHERE id = ?').get(id) as
       | Record<string, unknown>
       | undefined
     return row ? rowToRecord(row) : null
   }
 
-  private getRecordByPath(folderPath: string): DayFolderRecord | null {
+  private getRecordByPath(folderPath: string): UploadGroupRecord | null {
     const normalizedPath = normalizeFolderPath(folderPath)
     const row = getDb().prepare('SELECT * FROM day_folders WHERE folder_path = ?').get(normalizedPath) as
       | Record<string, unknown>
@@ -544,7 +560,7 @@ export class DayFolderRepo {
   }
 
   private completionPolicyFor(
-    record: DayFolderRecord,
+    record: UploadGroupRecord,
     childTasks: Array<Task | null>
   ): CompletionPolicy {
     const taskPolicy = childTasks.find((task) => task?.ruleSnapshot?.completion)
@@ -568,14 +584,14 @@ export class DayFolderRepo {
     return DEFAULT_COMPLETION_POLICY
   }
 
-  private toSummary(record: DayFolderRecord): DayFolderSummary {
+  private toSummary(record: UploadGroupRecord): UploadGroupSummary {
     const { childFolders: _childFolders, ...summary } = record
     return summary
   }
 }
 
-let instance: DayFolderRepo | null = null
-export function getDayFolderRepo(): DayFolderRepo {
-  if (!instance) instance = new DayFolderRepo()
+let instance: UploadGroupRepo | null = null
+export function getUploadGroupRepo(): UploadGroupRepo {
+  if (!instance) instance = new UploadGroupRepo()
   return instance
 }

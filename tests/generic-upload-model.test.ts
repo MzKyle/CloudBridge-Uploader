@@ -18,7 +18,7 @@ import {
   canUploadGroupTransition,
   deriveUploadGroupStatus
 } from '../src/shared/upload-group'
-import { discoverUploadGroups } from '../src/main/services/date-directory-discovery'
+import { discoverUploadGroups } from '../src/main/services/upload-group-discovery'
 
 test('discovery patterns and regexes extract named variables', () => {
   const regex = compileDiscoveryPattern('{machine}/{date:yyyyMMdd}')
@@ -187,6 +187,22 @@ test('upload group transitions and completion policies stay explicit', () => {
       taskStatuses: ['completed']
     }),
     'open'
+  )
+  assert.equal(
+    deriveUploadGroupStatus({
+      currentStatus: 'open',
+      completion: { mode: 'marker-file', markerFile: 'COMPLETE' },
+      taskStatuses: ['completed']
+    }),
+    'open'
+  )
+  assert.equal(
+    deriveUploadGroupStatus({
+      currentStatus: 'closing',
+      completion: { mode: 'marker-file', markerFile: 'COMPLETE' },
+      taskStatuses: ['completed']
+    }),
+    'sealed'
   )
   assert.equal(
     deriveUploadGroupStatus({

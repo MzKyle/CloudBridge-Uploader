@@ -1,7 +1,7 @@
 import { stat } from 'fs/promises'
 import { getSettingsRepo } from '../db/settings.repo'
 import { assertSafeCleanupPath } from '../utils/cleanup-path-safety'
-import { discoverUploadGroups } from './date-directory-discovery'
+import { discoverUploadGroups } from './upload-group-discovery'
 import { FileFilterService, type ScannedFile } from './file-filter.service'
 import { renderPathMapping, validatePathMappingTemplate } from '@shared/path-mapping'
 import { getRuleById, resolveRuleDestinations } from '@shared/upload-rule'

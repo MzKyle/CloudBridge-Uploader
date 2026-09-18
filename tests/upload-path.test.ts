@@ -4,7 +4,7 @@ import {
   renderPathMapping,
   validatePathMappingTemplate
 } from '../src/shared/path-mapping'
-import { joinOssPath } from '../src/shared/day-folder'
+import { joinOssPath } from '../src/shared/upload-path'
 
 test('keep-relative maps nested file paths below the connection prefix', () => {
   const mappedPath = renderPathMapping(

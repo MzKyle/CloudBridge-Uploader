@@ -24,13 +24,13 @@ export const IPC = {
   UPLOAD_QUEUE_STOP: 'upload-queue:stop',
   UPLOAD_QUEUE_EVENT: 'upload-queue:event',
 
-  // 日期目录汇总
-  DAY_FOLDER_LIST: 'day-folder:list',
-  DAY_FOLDER_DELETE: 'day-folder:delete',
-  DAY_FOLDER_IGNORE: 'day-folder:ignore',
-  DAY_FOLDER_RESTORE: 'day-folder:restore',
+  // 归档组汇总
+  UPLOAD_GROUP_LIST: 'upload-group:list',
+  UPLOAD_GROUP_DELETE: 'upload-group:delete',
+  UPLOAD_GROUP_IGNORE: 'upload-group:ignore',
+  UPLOAD_GROUP_RESTORE: 'upload-group:restore',
   UPLOAD_GROUP_CLOSE: 'upload-group:close',
-  DAY_FOLDER_EVENT: 'day-folder:event',
+  UPLOAD_GROUP_EVENT: 'upload-group:event',
 
   // 扫描器
   SCANNER_STATUS: 'scanner:status',

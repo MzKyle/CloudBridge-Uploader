@@ -2,10 +2,10 @@ import { existsSync } from 'fs'
 import { rm } from 'fs/promises'
 import log from 'electron-log'
 import { getTaskRepo } from '../db/task.repo'
-import { getDayFolderRepo } from '../db/day-folder.repo'
+import { getUploadGroupRepo } from '../db/upload-group.repo'
 import { getSettingsRepo } from '../db/settings.repo'
 import { getTaskDestinationRepo } from '../db/task-destination.repo'
-import { getDayFolderService } from './day-folder.service'
+import { getUploadGroupService } from './upload-group.service'
 import { FileFilterService } from './file-filter.service'
 import { resolveCleanupPolicyForGroup } from './upload-group-policy'
 import { assertSafeCleanupPath } from '../utils/cleanup-path-safety'
@@ -63,48 +63,48 @@ export class CleanupService {
 
       const retentionDays = this.normalizeRetentionDays(config)
       const taskRepo = getTaskRepo()
-      const dayFolderRepo = getDayFolderRepo()
+      const uploadGroupRepo = getUploadGroupRepo()
       const tasks = config.enabled
         ? taskRepo.getCompletedForCleanup(retentionDays)
         : []
-      const dayFolders = dayFolderRepo.listCleanupCandidates()
+      const uploadGroups = uploadGroupRepo.listCleanupCandidates()
 
-      if (tasks.length === 0 && dayFolders.length === 0) return
+      if (tasks.length === 0 && uploadGroups.length === 0) return
 
       log.info(
-        `自动清理: 发现 ${dayFolders.length} 个归档组、${tasks.length} 个独立任务可清理 ` +
+        `自动清理: 发现 ${uploadGroups.length} 个归档组、${tasks.length} 个独立任务可清理 ` +
           `(保留天数: ${retentionDays})`
       )
 
       let cleaned = 0
-      for (const dayFolder of dayFolders) {
+      for (const uploadGroup of uploadGroups) {
         try {
-          const resolved = resolveCleanupPolicyForGroup(dayFolder)
+          const resolved = resolveCleanupPolicyForGroup(uploadGroup)
           if (!resolved.policy.enabled) continue
 
           const groupRetentionDays = this.normalizeRetentionDays(resolved.policy)
-          if (!this.retentionExpired(dayFolder.sealedAt || dayFolder.completedAt, groupRetentionDays)) {
+          if (!this.retentionExpired(uploadGroup.sealedAt || uploadGroup.completedAt, groupRetentionDays)) {
             continue
           }
-          if (!existsSync(dayFolder.folderPath)) continue
+          if (!existsSync(uploadGroup.folderPath)) continue
 
-          await this.refreshGroupFiles(dayFolder.id)
-          const latest = dayFolderRepo.recalculate(dayFolder.id)
+          await this.refreshGroupFiles(uploadGroup.id)
+          const latest = uploadGroupRepo.recalculate(uploadGroup.id)
           if (!latest) continue
           // onlyAfterSealed is a deprecated compatibility field. Runtime cleanup
           // always keeps sealed/cleanable as a hard safety invariant.
           if (!this.isSealedCleanupCandidate(latest)) continue
           if (!this.retentionExpired(latest.sealedAt || latest.completedAt, groupRetentionDays)) continue
-          if (!dayFolderRepo.isSafeToClean(latest.id)) {
+          if (!uploadGroupRepo.isSafeToClean(latest.id)) {
             continue
           }
           await assertSafeCleanupPath({
             targetPath: latest.folderPath,
             sourceRoots: resolved.sourceRoots
           })
-          dayFolderRepo.markCleanable(latest.id)
+          uploadGroupRepo.markCleanable(latest.id)
           await rm(latest.folderPath, { recursive: true, force: true })
-          dayFolderRepo.markCleaned(latest.id)
+          uploadGroupRepo.markCleaned(latest.id)
           cleaned++
           log.info(
             `自动清理: 已删除归档组 ${latest.folderPath} ` +
@@ -112,7 +112,7 @@ export class CleanupService {
             `保留天数: ${groupRetentionDays})`
           )
         } catch (err) {
-          log.error(`自动清理归档组失败: ${dayFolder.folderPath}`, err)
+          log.error(`自动清理归档组失败: ${uploadGroup.folderPath}`, err)
         }
       }
 
@@ -163,17 +163,17 @@ export class CleanupService {
     return group.uploadGroupStatus === 'sealed' || group.uploadGroupStatus === 'cleanable'
   }
 
-  private async refreshGroupFiles(dayFolderId: string): Promise<void> {
-    const tasks = getDayFolderRepo().getChildTasks(dayFolderId)
+  private async refreshGroupFiles(uploadGroupId: string): Promise<void> {
+    const tasks = getUploadGroupRepo().getChildTasks(uploadGroupId)
     await Promise.all(tasks.map((task) => this.refreshTaskFiles(task)))
-    getDayFolderService().refresh(dayFolderId)
+    getUploadGroupService().refresh(uploadGroupId)
   }
 
   private async refreshTaskFiles(task: Task): Promise<void> {
     if (!existsSync(task.folderPath) || task.status === 'skipped') return
     const settings = getSettingsRepo().getAll()
     const requiredStableChecks =
-      task.sourceType === 'local' && task.dayFolderId
+      task.sourceType === 'local' && task.uploadGroupId
         ? Math.max(2, settings.stability.checkCount || 2)
         : 1
     await getTaskRepo().reconcileFileBatches(

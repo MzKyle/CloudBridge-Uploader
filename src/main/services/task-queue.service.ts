@@ -3,7 +3,7 @@ import log from 'electron-log'
 import { getTaskRepo } from '../db/task.repo'
 import { getSettingsRepo } from '../db/settings.repo'
 import { getCleanupService } from './cleanup.service'
-import { getDayFolderService } from './day-folder.service'
+import { getUploadGroupService } from './upload-group.service'
 import { getTaskDestinationRepo } from '../db/task-destination.repo'
 import type {
   Task,
@@ -197,7 +197,7 @@ export class TaskQueueService extends EventEmitter {
 
       if (!controller.signal.aborted) {
         taskRepo.updateStatus(task.id, finalStatus)
-        getDayFolderService().refreshForTask(task.id)
+        getUploadGroupService().refreshForTask(task.id)
         if (finalStatus === 'completed') {
           getCleanupService().scheduleCleanup()
         }
@@ -217,7 +217,7 @@ export class TaskQueueService extends EventEmitter {
           'failed',
           errMsg
         )
-        getDayFolderService().refreshForTask(task.id)
+        getUploadGroupService().refreshForTask(task.id)
         this.emit('task:status-change', {
           taskId: task.id,
           oldStatus: 'uploading',
@@ -243,10 +243,10 @@ export class TaskQueueService extends EventEmitter {
     for (const taskId of input.taskIds || []) {
       if (taskId) ids.add(taskId)
     }
-    const dayFolderTaskIds = taskRepo.listPendingUploadTaskIdsByDayFolderIds(
-      input.dayFolderIds || []
+    const uploadGroupTaskIds = taskRepo.listPendingUploadTaskIdsByUploadGroupIds(
+      input.uploadGroupIds || []
     )
-    for (const taskId of dayFolderTaskIds) ids.add(taskId)
+    for (const taskId of uploadGroupTaskIds) ids.add(taskId)
     return Array.from(ids)
   }
 
@@ -278,7 +278,7 @@ export class TaskQueueService extends EventEmitter {
     this.runningTasks.delete(taskId)
     getTaskRepo().updateStatus(taskId, 'paused')
     getTaskDestinationRepo().updateIncompleteStatuses(taskId, 'paused')
-    getDayFolderService().refreshForTask(taskId)
+    getUploadGroupService().refreshForTask(taskId)
     this.emit('task:status-change', {
       taskId,
       oldStatus: 'uploading',

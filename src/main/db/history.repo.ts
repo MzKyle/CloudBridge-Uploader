@@ -19,13 +19,16 @@ function rowToHistory(row: Record<string, unknown>): HistoryItem {
 export class HistoryRepo {
   list(query: HistoryQuery): HistoryResult {
     const db = getDb()
-    const { page, pageSize, status, provider } = query
+    const { page, pageSize, status, provider, connectionId } = query
     const offset = (page - 1) * pageSize
 
     let where =
       "WHERE td.status IN ('completed', 'failed') AND td.completed_at IS NOT NULL"
     const params: unknown[] = []
-    if (provider) {
+    if (connectionId) {
+      where += ' AND td.connection_id = ?'
+      params.push(connectionId)
+    } else if (provider) {
       where += ' AND td.provider = ?'
       params.push(provider)
     }
@@ -60,11 +63,13 @@ export class HistoryRepo {
     return { items: rows.map(rowToHistory), total }
   }
 
-  clear(before?: string, provider?: CloudProvider): void {
+  clear(before?: string, provider?: CloudProvider, connectionId?: string): void {
     const db = getDb()
     const transaction = db.transaction(() => {
-      if (provider) {
-        const params: unknown[] = [provider]
+      if (connectionId || provider) {
+        const scopeColumn = connectionId ? 'connection_id' : 'provider'
+        const scopeValue = connectionId || provider
+        const params: unknown[] = [scopeValue]
         let beforeCondition = ''
         if (before) {
           beforeCondition = ' AND completed_at < ?'
@@ -72,7 +77,7 @@ export class HistoryRepo {
         }
         db.prepare(
           `DELETE FROM task_destinations
-           WHERE provider = ?
+           WHERE ${scopeColumn} = ?
              AND status IN ('completed', 'failed')
              AND completed_at IS NOT NULL${beforeCondition}`
         ).run(...params)
@@ -91,14 +96,16 @@ export class HistoryRepo {
     transaction()
   }
 
-  deleteById(id: string, provider?: CloudProvider): void {
+  deleteById(id: string, provider?: CloudProvider, connectionId?: string): void {
     const db = getDb()
     const transaction = db.transaction(() => {
-      if (provider) {
+      if (connectionId || provider) {
+        const scopeColumn = connectionId ? 'connection_id' : 'provider'
+        const scopeValue = connectionId || provider
         db.prepare(
           `DELETE FROM task_destinations
-           WHERE task_id = ? AND provider = ? AND status IN ('completed', 'failed')`
-        ).run(id, provider)
+           WHERE task_id = ? AND ${scopeColumn} = ? AND status IN ('completed', 'failed')`
+        ).run(id, scopeValue)
         db.prepare(
           `DELETE FROM tasks
            WHERE id = ?

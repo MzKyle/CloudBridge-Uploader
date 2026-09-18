@@ -9,7 +9,7 @@ import type {
   AppSettings,
   CloudProvider,
   ConnectionTestInput,
-  DayFolderListQuery,
+  UploadGroupListQuery,
   DiskUsageInfo,
   HistoryQuery,
   OSSListQuery,
@@ -27,8 +27,8 @@ import {
   resolveRuleUploadSnapshot
 } from '@shared/upload-rule'
 import { renderPathMapping } from '@shared/path-mapping'
-import { joinOssPath } from '@shared/day-folder'
-import { getDayFolderRepo } from '../db/day-folder.repo'
+import { joinOssPath } from '@shared/upload-path'
+import { getUploadGroupRepo } from '../db/upload-group.repo'
 import { getHistoryRepo } from '../db/history.repo'
 import { getSettingsRepo } from '../db/settings.repo'
 import { getTaskDestinationRepo } from '../db/task-destination.repo'
@@ -39,7 +39,7 @@ import { getOSSUploadService } from '../services/oss-upload.service'
 import { getScannerService } from '../services/scanner.service'
 import { getTaskQueueService } from '../services/task-queue.service'
 import { getTencentS3UploadService } from '../services/tencent-s3-upload.service'
-import { getDayFolderService } from '../services/day-folder.service'
+import { getUploadGroupService } from '../services/upload-group.service'
 import { getUploadRuleDryRunService } from '../services/upload-rule-dry-run.service'
 import { shouldRestartScannerAfterSettingsSave } from '@shared/settings-effects'
 import { getMainWindow, createOSSPreviewWindow } from '../index'
@@ -102,27 +102,27 @@ export function registerAllIpc(): void {
     getTaskQueueService().cancelRunningTask(args.taskId)
     getTaskRepo().updateStatus(args.taskId, 'paused')
     getTaskDestinationRepo().updateIncompleteStatuses(args.taskId, 'paused')
-    getDayFolderService().refreshForTask(args.taskId)
+    getUploadGroupService().refreshForTask(args.taskId)
     broadcastStatusChange(args.taskId, 'paused')
   })
 
   ipcMain.handle(IPC.TASK_RESUME, (_event, args: { taskId: string }) => {
     getTaskRepo().retry(args.taskId)
-    getDayFolderService().refreshForTask(args.taskId)
+    getUploadGroupService().refreshForTask(args.taskId)
     broadcastStatusChange(args.taskId, 'pending')
   })
 
   ipcMain.handle(IPC.TASK_CANCEL, (_event, args: { taskId: string }) => {
     getTaskQueueService().cancelRunningTask(args.taskId)
     getTaskRepo().skip(args.taskId, '用户跳过')
-    getDayFolderService().refreshForTask(args.taskId)
+    getUploadGroupService().refreshForTask(args.taskId)
     broadcastStatusChange(args.taskId, 'skipped')
   })
 
   ipcMain.handle(IPC.TASK_SKIP, (_event, args: { taskId: string }) => {
     getTaskQueueService().cancelRunningTask(args.taskId)
     getTaskRepo().skip(args.taskId, '用户跳过')
-    getDayFolderService().refreshForTask(args.taskId)
+    getUploadGroupService().refreshForTask(args.taskId)
     broadcastStatusChange(args.taskId, 'skipped')
   })
 
@@ -133,13 +133,13 @@ export function registerAllIpc(): void {
     getTaskRepo().restore(args.taskId)
     const restored = getTaskRepo().getById(args.taskId)
     if (restored) getScannerService().queueReconcileTask(restored)
-    getDayFolderService().refreshForTask(args.taskId)
+    getUploadGroupService().refreshForTask(args.taskId)
     broadcastStatusChange(args.taskId, 'scanning')
   })
 
   ipcMain.handle(IPC.TASK_RETRY, (_event, args: { taskId: string; connectionId?: string }) => {
     getTaskRepo().retry(args.taskId, args.connectionId)
-    getDayFolderService().refreshForTask(args.taskId)
+    getUploadGroupService().refreshForTask(args.taskId)
     broadcastStatusChange(args.taskId, 'pending')
   })
 
@@ -156,16 +156,16 @@ export function registerAllIpc(): void {
   ipcMain.handle(IPC.SCANNER_START, () => getScannerService().start())
   ipcMain.handle(IPC.SCANNER_STOP, () => getScannerService().stop())
 
-  ipcMain.handle(IPC.DAY_FOLDER_LIST, (_event, query?: DayFolderListQuery) => {
-    return getDayFolderRepo().list(query)
+  ipcMain.handle(IPC.UPLOAD_GROUP_LIST, (_event, query?: UploadGroupListQuery) => {
+    return getUploadGroupRepo().list(query)
   })
 
-  ipcMain.handle(IPC.DAY_FOLDER_DELETE, (_event, args: { id: string; provider?: CloudProvider }) => {
-    getDayFolderRepo().deleteCompleted(args.id, args.provider)
+  ipcMain.handle(IPC.UPLOAD_GROUP_DELETE, (_event, args: { id: string; provider?: CloudProvider; connectionId?: string }) => {
+    getUploadGroupRepo().deleteCompleted(args.id, args.provider, args.connectionId)
   })
 
-  ipcMain.handle(IPC.DAY_FOLDER_IGNORE, (_event, args: { id: string }) => {
-    const repo = getDayFolderRepo()
+  ipcMain.handle(IPC.UPLOAD_GROUP_IGNORE, (_event, args: { id: string }) => {
+    const repo = getUploadGroupRepo()
     repo.setIgnored(args.id, true)
     for (const task of repo.getChildTasks(args.id)) {
       if (task.status === 'completed' || task.status === 'synced') continue
@@ -173,11 +173,11 @@ export function registerAllIpc(): void {
       getTaskRepo().skip(task.id, '用户忽略整个归档组')
       broadcastStatusChange(task.id, 'skipped')
     }
-    return getDayFolderService().refresh(args.id)
+    return getUploadGroupService().refresh(args.id)
   })
 
-  ipcMain.handle(IPC.DAY_FOLDER_RESTORE, (_event, args: { id: string }) => {
-    const repo = getDayFolderRepo()
+  ipcMain.handle(IPC.UPLOAD_GROUP_RESTORE, (_event, args: { id: string }) => {
+    const repo = getUploadGroupRepo()
     repo.setIgnored(args.id, false)
     for (const task of repo.getChildTasks(args.id)) {
       if (task.status !== 'skipped' || !existsSync(task.folderPath)) continue
@@ -186,11 +186,11 @@ export function registerAllIpc(): void {
       if (restored) getScannerService().queueReconcileTask(restored)
       broadcastStatusChange(task.id, 'scanning')
     }
-    return getDayFolderService().refresh(args.id)
+    return getUploadGroupService().refresh(args.id)
   })
 
   ipcMain.handle(IPC.UPLOAD_GROUP_CLOSE, (_event, args: { id: string }) => {
-    return getDayFolderService().requestCloseUploadGroup(args.id)
+    return getUploadGroupService().requestCloseUploadGroup(args.id)
   })
 
   ipcMain.handle(IPC.SETTINGS_GET_ALL, () => getSettingsRepo().getAll())
@@ -301,12 +301,12 @@ export function registerAllIpc(): void {
   ipcMain.handle(IPC.HISTORY_LIST, (_event, query: HistoryQuery) => {
     return getHistoryRepo().list(query)
   })
-  ipcMain.handle(IPC.HISTORY_CLEAR, (_event, args?: { before?: string; provider?: CloudProvider }) => {
-    getHistoryRepo().clear(args?.before, args?.provider)
-    getDayFolderRepo().clearCompleted(args?.before, args?.provider)
+  ipcMain.handle(IPC.HISTORY_CLEAR, (_event, args?: { before?: string; provider?: CloudProvider; connectionId?: string }) => {
+    getHistoryRepo().clear(args?.before, args?.provider, args?.connectionId)
+    getUploadGroupRepo().clearCompleted(args?.before, args?.provider, args?.connectionId)
   })
-  ipcMain.handle(IPC.HISTORY_DELETE, (_event, args: { id: string; provider?: CloudProvider }) => {
-    getHistoryRepo().deleteById(args.id, args.provider)
+  ipcMain.handle(IPC.HISTORY_DELETE, (_event, args: { id: string; provider?: CloudProvider; connectionId?: string }) => {
+    getHistoryRepo().deleteById(args.id, args.provider, args.connectionId)
   })
 
   ipcMain.handle(IPC.DIALOG_SELECT_FOLDER, async () => {

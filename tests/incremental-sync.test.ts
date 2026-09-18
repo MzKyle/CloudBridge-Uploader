@@ -16,7 +16,7 @@ function createDatabase(): Database.Database {
   return db
 }
 
-function insertDayFolder(db: Database.Database, id: string): void {
+function insertLegacyUploadGroup(db: Database.Database, id: string): void {
   const now = new Date().toISOString()
   db.prepare(`
     INSERT INTO day_folders (
@@ -61,11 +61,11 @@ test('incremental discovery waits for stability and requeues changed files', () 
   const db = createDatabase()
   const repo = new TaskRepo()
   const destinationRepo = new TaskDestinationRepo()
-  insertDayFolder(db, 'day-1')
+  insertLegacyUploadGroup(db, 'day-1')
   const task = repo.create({
     folderPath: '/data/2026-06-18/work-1',
     folderName: 'work-1',
-    dayFolderId: 'day-1',
+    uploadGroupId: 'day-1',
     uploadRelativePath: '2026-06-18/work-1'
   })
 
@@ -114,17 +114,17 @@ test('incremental discovery waits for stability and requeues changed files', () 
 test('batched reconcile matches array reconcile for changed and missing files', async () => {
   const db = createDatabase()
   const repo = new TaskRepo()
-  insertDayFolder(db, 'day-batched-equivalence')
+  insertLegacyUploadGroup(db, 'day-batched-equivalence')
   const arrayTask = repo.create({
     folderPath: '/data/2026-06-18/work-array',
     folderName: 'work-array',
-    dayFolderId: 'day-batched-equivalence',
+    uploadGroupId: 'day-batched-equivalence',
     uploadRelativePath: '2026-06-18/work-array'
   })
   const batchedTask = repo.create({
     folderPath: '/data/2026-06-18/work-batched',
     folderName: 'work-batched',
-    dayFolderId: 'day-batched-equivalence',
+    uploadGroupId: 'day-batched-equivalence',
     uploadRelativePath: '2026-06-18/work-batched'
   })
   const initialFiles = [
@@ -163,11 +163,11 @@ test('batched reconcile matches array reconcile for changed and missing files', 
 test('reconciling 10000 small files remains idempotent', () => {
   const db = createDatabase()
   const repo = new TaskRepo()
-  insertDayFolder(db, 'day-2')
+  insertLegacyUploadGroup(db, 'day-2')
   const task = repo.create({
     folderPath: '/data/2026-06-18/work-2',
     folderName: 'work-2',
-    dayFolderId: 'day-2',
+    uploadGroupId: 'day-2',
     uploadRelativePath: '2026-06-18/work-2'
   })
   const files = Array.from({ length: 10_000 }, (_, index) => ({
@@ -198,11 +198,11 @@ test('reconciling 10000 small files remains idempotent', () => {
 test('batched reconcile handles 10000 small files idempotently', async () => {
   const db = createDatabase()
   const repo = new TaskRepo()
-  insertDayFolder(db, 'day-batched-10000')
+  insertLegacyUploadGroup(db, 'day-batched-10000')
   const task = repo.create({
     folderPath: '/data/2026-06-18/work-batched-10000',
     folderName: 'work-batched-10000',
-    dayFolderId: 'day-batched-10000',
+    uploadGroupId: 'day-batched-10000',
     uploadRelativePath: '2026-06-18/work-batched-10000'
   })
   const files = Array.from({ length: 10_000 }, (_, index) => ({
@@ -234,11 +234,11 @@ test('retrying one cloud preserves an already synced destination', () => {
   const db = createDatabase()
   const repo = new TaskRepo()
   const destinationRepo = new TaskDestinationRepo()
-  insertDayFolder(db, 'day-3')
+  insertLegacyUploadGroup(db, 'day-3')
   const task = repo.create({
     folderPath: '/data/2026-06-18/work-3',
     folderName: 'work-3',
-    dayFolderId: 'day-3',
+    uploadGroupId: 'day-3',
     uploadRelativePath: '2026-06-18/work-3',
     destinations: [
       {

@@ -4,7 +4,7 @@ import Database from 'better-sqlite3'
 import { getActiveRuleScanRoots } from '../src/shared/scan-config'
 import { migrateSettingsToV3 } from '../src/main/migrations/v2-to-v3-settings'
 import { runMigrations, setDbForTests } from '../src/main/db/database'
-import { getDayFolderRepo } from '../src/main/db/day-folder.repo'
+import { getUploadGroupRepo } from '../src/main/db/upload-group.repo'
 import { getHistoryRepo } from '../src/main/db/history.repo'
 import {
   getTaskDestinationRepo,
@@ -103,12 +103,12 @@ test('splits legacy profiles when provider roots diverge', () => {
 test('scanner task registration snapshots connection destinations', () => {
   const db = createTestDb()
   try {
-    const dayFolder = getDayFolderRepo().ensure('/data/2026-06-27', '2026-06-27')
+    const uploadGroup = getUploadGroupRepo().ensure('/data/2026-06-27', '2026-06-27')
     const scanner = new ScannerService() as unknown as {
       ensureTaskRegistered: (
         dirPath: string,
         folderName: string,
-        dayFolderId: string,
+        uploadGroupId: string,
         uploadRelativePath: string,
         targetSnapshot: {
           ruleId: string
@@ -127,7 +127,7 @@ test('scanner task registration snapshots connection destinations', () => {
     const bothTask = scanner.ensureTaskRegistered(
       '/data/2026-06-27/both',
       'both',
-      dayFolder.id,
+      uploadGroup.id,
       '2026-06-27/both',
       {
         ruleId: 'rule-1',
@@ -224,16 +224,16 @@ test('history delete and clear are scoped to the selected provider', () => {
   }
 })
 
-test('day folder summaries can be filtered and deleted by provider', () => {
+test('upload group summaries can be filtered and deleted by legacy provider', () => {
   const db = createTestDb()
   try {
-    const dayFolder = getDayFolderRepo().ensure('/data/2026-06-27', '2026-06-27')
+    const uploadGroup = getUploadGroupRepo().ensure('/data/2026-06-27', '2026-06-27')
     const task = getTaskRepo().create({
       folderPath: '/data/2026-06-27/both',
       folderName: 'both',
       ossPrefix: 'ali/',
       destinations: cloudDestinations('2026-06-27/both', { aliyun: 'ali/', tencent: 'ten/' }),
-      dayFolderId: dayFolder.id,
+      uploadGroupId: uploadGroup.id,
       uploadRelativePath: '2026-06-27/both',
       sourceType: 'local'
     })
@@ -241,18 +241,18 @@ test('day folder summaries can be filtered and deleted by provider', () => {
     getTaskDestinationRepo().updateStatus(task.id, 's3-compatible', 'synced')
     db.prepare(
       "UPDATE day_folders SET status = 'completed', completed_at = ? WHERE id = ?"
-    ).run(new Date().toISOString(), dayFolder.id)
+    ).run(new Date().toISOString(), uploadGroup.id)
 
-    assert.equal(getDayFolderRepo().list({ provider: 'aliyun' }).length, 1)
-    assert.equal(getDayFolderRepo().list({ provider: 'tencent' }).length, 1)
+    assert.equal(getUploadGroupRepo().list({ provider: 'aliyun' }).length, 1)
+    assert.equal(getUploadGroupRepo().list({ provider: 'tencent' }).length, 1)
 
-    getDayFolderRepo().deleteCompleted(dayFolder.id, 'aliyun')
-    assert.equal(getDayFolderRepo().list({ provider: 'aliyun' }).length, 0)
-    assert.equal(getDayFolderRepo().list({ provider: 'tencent' }).length, 1)
-    assert.equal(getDayFolderRepo().getById(dayFolder.id)?.id, dayFolder.id)
+    getUploadGroupRepo().deleteCompleted(uploadGroup.id, 'aliyun')
+    assert.equal(getUploadGroupRepo().list({ provider: 'aliyun' }).length, 0)
+    assert.equal(getUploadGroupRepo().list({ provider: 'tencent' }).length, 1)
+    assert.equal(getUploadGroupRepo().getById(uploadGroup.id)?.id, uploadGroup.id)
 
-    getDayFolderRepo().deleteCompleted(dayFolder.id, 'tencent')
-    assert.equal(getDayFolderRepo().getById(dayFolder.id), null)
+    getUploadGroupRepo().deleteCompleted(uploadGroup.id, 'tencent')
+    assert.equal(getUploadGroupRepo().getById(uploadGroup.id), null)
   } finally {
     closeTestDb(db)
   }

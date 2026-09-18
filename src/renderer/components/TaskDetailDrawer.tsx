@@ -13,9 +13,8 @@ import { Progress } from "@/components/ui/progress";
 import { SideDrawer } from "@/components/ui/side-drawer";
 import { fetchTaskDetail } from "@/lib/ipc-client";
 import { formatBytes, formatSpeed } from "@/lib/utils";
-import { CLOUD_PROVIDER_LABELS, TASK_STATUS_LABELS } from "@shared/constants";
+import { TASK_STATUS_LABELS } from "@shared/constants";
 import type {
-  CloudProvider,
   Task,
   TaskDetail,
   TaskProgress,
@@ -23,7 +22,7 @@ import type {
 
 interface TaskDetailDrawerProps {
   task: Task | null;
-  provider: CloudProvider;
+  selectedConnectionId: "all" | string;
   open: boolean;
   progress?: TaskProgress;
   onOpenChange: (open: boolean) => void;
@@ -51,7 +50,7 @@ const STATUS_VARIANT: Record<
 
 export function TaskDetailDrawer({
   task,
-  provider,
+  selectedConnectionId,
   open,
   progress,
   onOpenChange,
@@ -65,9 +64,21 @@ export function TaskDetailDrawer({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const destination = task?.destinations.find(
-    (item) => item.legacyProvider === provider,
+  const destinations = useMemo(
+    () =>
+      task
+        ? selectedConnectionId === "all"
+          ? task.destinations
+          : task.destinations.filter((item) => item.connectionId === selectedConnectionId)
+        : [],
+    [selectedConnectionId, task],
   );
+  const destination =
+    selectedConnectionId === "all" ? undefined : destinations[0];
+  const retryDestination =
+    destination?.status === "failed"
+      ? destination
+      : destinations.find((item) => item.status === "failed");
   const status = destination?.status ?? task?.status;
   const uploadedFiles = progress?.uploadedFiles ?? destination?.uploadedFiles ?? 0;
   const totalFiles = progress?.totalFiles ?? destination?.totalFiles ?? 0;
@@ -113,11 +124,11 @@ export function TaskDetailDrawer({
             恢复
           </Button>
         )}
-        {status === "failed" && (
+        {retryDestination && (
           <Button
             variant="outline"
             size="sm"
-            onClick={() => destination && onRetry(task.id, destination.connectionId)}
+            onClick={() => onRetry(task.id, retryDestination.connectionId)}
           >
             <RotateCcw className="mr-1 h-4 w-4" />
             重试此云端
@@ -153,7 +164,7 @@ export function TaskDetailDrawer({
     onRestore,
     onResume,
     onRetry,
-    provider,
+    retryDestination,
     status,
     task,
   ]);
@@ -176,7 +187,7 @@ export function TaskDetailDrawer({
                 {TASK_STATUS_LABELS[status || "pending"] || status}
               </Badge>
               <span className="text-xs text-muted-foreground">
-                {CLOUD_PROVIDER_LABELS[provider]}
+                {destination?.connectionName || destination?.connectionId || "全部连接"}
               </span>
               {task.ruleName && (
                 <span className="text-xs text-muted-foreground">
@@ -218,6 +229,18 @@ export function TaskDetailDrawer({
               错误: {errorText}
             </div>
           )}
+          {selectedConnectionId === "all" && destinations.length > 1 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {destinations.map((item) => (
+                <Badge
+                  key={item.connectionId}
+                  variant={STATUS_VARIANT[item.status] || "secondary"}
+                >
+                  {(item.connectionName || item.connectionId)} · {TASK_STATUS_LABELS[item.status] || item.status}
+                </Badge>
+              ))}
+            </div>
+          )}
         </div>
 
         <div>
@@ -236,13 +259,17 @@ export function TaskDetailDrawer({
           {!loading && !error && detail && detail.files.length > 0 && (
             <div className="max-h-[55vh] overflow-auto rounded-md border text-xs">
               {detail.files.map((file) => {
-                const fileDestination = file.destinations.find(
-                  (item) => item.connectionId === destination?.connectionId,
-                );
+                const fileDestinations =
+                  selectedConnectionId === "all"
+                    ? file.destinations
+                    : file.destinations.filter(
+                        (item) => item.connectionId === destination?.connectionId,
+                      );
+                const fileDestination = fileDestinations[0];
                 const fileStatus = fileDestination?.status || file.status;
                 return (
                   <div
-                    key={`${file.id}:${destination?.connectionId || provider}`}
+                    key={`${file.id}:${destination?.connectionId || "all"}`}
                     className="border-b p-2 last:border-b-0"
                   >
                     <div className="flex justify-between gap-3">
@@ -259,6 +286,18 @@ export function TaskDetailDrawer({
                     {fileDestination?.plannedObjectKey && (
                       <div className="mt-1 break-all font-mono text-muted-foreground">
                         {fileDestination.plannedObjectKey}
+                      </div>
+                    )}
+                    {selectedConnectionId === "all" && fileDestinations.length > 1 && (
+                      <div className="mt-1 flex flex-wrap gap-1.5">
+                        {fileDestinations.map((item) => (
+                          <span
+                            key={item.connectionId}
+                            className="rounded border px-1.5 py-0.5 text-muted-foreground"
+                          >
+                            {item.connectionId}: {TASK_STATUS_LABELS[item.status] || item.status}
+                          </span>
+                        ))}
                       </div>
                     )}
                     {file.nextRetryAt && (

@@ -17,14 +17,13 @@ import { TaskCard } from "@/components/TaskCard";
 import { TaskDetailDrawer } from "@/components/TaskDetailDrawer";
 import { ScanSchedulePanel } from "@/components/ScanSchedulePanel";
 import { DiskUsagePanel } from "@/components/DiskUsagePanel";
-import { DayFolderCard } from "@/components/DayFolderCard";
+import { UploadGroupCard } from "@/components/UploadGroupCard";
 import { PathTree } from "@/components/PathTree";
 import { QueueStatusBar } from "@/components/QueueStatusBar";
 import { useTaskStore } from "@/stores/task.store";
 import { useTaskProgress } from "@/hooks/useTaskProgress";
 import { showToast } from "@/components/ui/toast";
 import { buildPathTree } from "@/lib/path-tree";
-import { legacyProviderForConnection } from "@shared/cloud-upload";
 import {
   selectFolder,
   addFolder as addFolderApi,
@@ -34,9 +33,9 @@ import {
   restoreTask,
   retryTask,
   triggerScan,
-  fetchDayFolders,
-  ignoreDayFolder,
-  restoreDayFolder,
+  fetchUploadGroups,
+  ignoreUploadGroup,
+  restoreUploadGroup,
   closeUploadGroup,
   fetchSettings,
   fetchUploadQueueStatus,
@@ -46,8 +45,8 @@ import {
 } from "@/lib/ipc-client";
 import { IPC } from "@shared/ipc-channels";
 import type {
-  CloudProvider,
-  DayFolderSummary,
+  CloudConnection,
+  UploadGroupSummary,
   Task,
   UploadPathPreview,
   UploadQueueStatus,
@@ -55,13 +54,13 @@ import type {
 import { progressKey } from "@shared/cloud-upload";
 
 type DashboardTreeItem =
-  | { kind: "dayFolder"; dayFolder: DayFolderSummary }
+  | { kind: "uploadGroup"; uploadGroup: UploadGroupSummary }
   | { kind: "task"; task: Task };
 
 type ConfirmAction =
   | { kind: "upload-window"; scope: "selected" | "all-pending" }
   | { kind: "stop-upload" }
-  | { kind: "ignore-day"; id: string }
+  | { kind: "ignore-group"; id: string }
   | { kind: "close-upload-group"; id: string }
   | { kind: "skip-task"; id: string };
 
@@ -72,13 +71,29 @@ interface DashboardRuleOption {
   completionMode: string;
 }
 
+type ConnectionSelection = "all" | string;
+
+interface DashboardConnectionOption {
+  id: string;
+  name: string;
+}
+
+function connectionOption(connection: CloudConnection): DashboardConnectionOption {
+  return {
+    id: connection.id,
+    name: connection.name.trim() || connection.id,
+  };
+}
+
 export default function Dashboard() {
   const tasks = useTaskStore((state) => state.tasks);
   const loading = useTaskStore((state) => state.loading);
   const loadTasks = useTaskStore((state) => state.loadTasks);
-  const [dayFolders, setDayFolders] = useState<DayFolderSummary[]>([]);
-  const [provider, setProvider] = useState<CloudProvider>("aliyun");
-  const [providerReady, setProviderReady] = useState(false);
+  const [uploadGroups, setUploadGroups] = useState<UploadGroupSummary[]>([]);
+  const [selectedConnectionId, setSelectedConnectionId] =
+    useState<ConnectionSelection>("all");
+  const [settingsReady, setSettingsReady] = useState(false);
+  const [connections, setConnections] = useState<DashboardConnectionOption[]>([]);
   const [rules, setRules] = useState<DashboardRuleOption[]>([]);
   const [pendingFolder, setPendingFolder] = useState<string | null>(null);
   const [selectedRuleId, setSelectedRuleId] = useState("");
@@ -87,7 +102,7 @@ export default function Dashboard() {
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(
     () => new Set(),
   );
-  const [selectedDayFolderIds, setSelectedDayFolderIds] = useState<Set<string>>(
+  const [selectedUploadGroupIds, setSelectedUploadGroupIds] = useState<Set<string>>(
     () => new Set(),
   );
   const [uploadQueueStatus, setUploadQueueStatus] =
@@ -99,19 +114,18 @@ export default function Dashboard() {
 
   useTaskProgress();
 
+  const selectedConnectionQuery =
+    selectedConnectionId === "all" ? undefined : selectedConnectionId;
+  const selectedConnectionName =
+    selectedConnectionId === "all"
+      ? "全部连接"
+      : connections.find((connection) => connection.id === selectedConnectionId)?.name ||
+        selectedConnectionId;
+
   useEffect(() => {
     fetchSettings()
       .then((settings) => {
-        const activeRule =
-          settings.rules.find((rule) => rule.id === settings.activeRuleId) ||
-          settings.rules[0];
-        const providers = activeRule
-          ? activeRule.destinations
-            .map((destination) => settings.connections.find((connection) => connection.id === destination.connectionId))
-            .filter(Boolean)
-            .map((connection) => legacyProviderForConnection(connection!))
-          : [];
-        setProvider(providers.includes("tencent") && !providers.includes("aliyun") ? "tencent" : "aliyun");
+        setConnections(settings.connections.map(connectionOption));
         setRules(settings.rules.map((rule) => ({
           id: rule.id,
           name: rule.name,
@@ -121,31 +135,39 @@ export default function Dashboard() {
         setSelectedRuleId(settings.activeRuleId);
       })
       .catch(() => {})
-      .finally(() => setProviderReady(true));
+      .finally(() => setSettingsReady(true));
   }, []);
 
   useEffect(() => {
-    if (!providerReady) return;
+    if (!settingsReady) return;
     loadTasks();
-    fetchDayFolders({ limit: 30, provider, includeCompleted: false })
-      .then(setDayFolders)
+    fetchUploadGroups({
+      limit: 30,
+      connectionId: selectedConnectionQuery,
+      includeCompleted: false,
+    })
+      .then(setUploadGroups)
       .catch(() => {});
     fetchUploadQueueStatus()
       .then(setUploadQueueStatus)
       .catch(() => {});
-  }, [loadTasks, provider, providerReady]);
+  }, [loadTasks, selectedConnectionQuery, settingsReady]);
 
   useEffect(() => {
     const off = window.api.on(
-      IPC.DAY_FOLDER_EVENT,
+      IPC.UPLOAD_GROUP_EVENT,
       () => {
-        fetchDayFolders({ limit: 30, provider, includeCompleted: false })
-          .then(setDayFolders)
+        fetchUploadGroups({
+          limit: 30,
+          connectionId: selectedConnectionQuery,
+          includeCompleted: false,
+        })
+          .then(setUploadGroups)
           .catch(() => {});
       }
     );
     return () => off();
-  }, [provider]);
+  }, [selectedConnectionQuery]);
 
   useEffect(() => {
     const off = window.api.on(
@@ -206,24 +228,36 @@ export default function Dashboard() {
     await triggerScan();
     await Promise.all([
       loadTasks(),
-      fetchDayFolders({ limit: 30, provider, includeCompleted: false }).then(setDayFolders),
+      fetchUploadGroups({
+        limit: 30,
+        connectionId: selectedConnectionQuery,
+        includeCompleted: false,
+      }).then(setUploadGroups),
     ]);
-  }, [loadTasks, provider]);
+  }, [loadTasks, selectedConnectionQuery]);
 
   const handleRefresh = useCallback(async () => {
     await Promise.all([
       loadTasks(),
-      fetchDayFolders({ limit: 30, provider, includeCompleted: false }).then(setDayFolders),
+      fetchUploadGroups({
+        limit: 30,
+        connectionId: selectedConnectionQuery,
+        includeCompleted: false,
+      }).then(setUploadGroups),
     ]);
-  }, [loadTasks, provider]);
+  }, [loadTasks, selectedConnectionQuery]);
 
   const refreshDashboard = useCallback(async () => {
     await Promise.all([
       loadTasks(),
-      fetchDayFolders({ limit: 30, provider, includeCompleted: false }).then(setDayFolders),
+      fetchUploadGroups({
+        limit: 30,
+        connectionId: selectedConnectionQuery,
+        includeCompleted: false,
+      }).then(setUploadGroups),
       fetchUploadQueueStatus().then(setUploadQueueStatus),
     ]);
-  }, [loadTasks, provider]);
+  }, [loadTasks, selectedConnectionQuery]);
 
   const handlePause = useCallback(async (taskId: string) => {
     try {
@@ -267,25 +301,33 @@ export default function Dashboard() {
     }
   }, [loadTasks]);
 
-  const performIgnoreDay = useCallback(async (id: string) => {
-    await ignoreDayFolder(id);
+  const performIgnoreUploadGroup = useCallback(async (id: string) => {
+    await ignoreUploadGroup(id);
     await Promise.all([
       loadTasks(),
-      fetchDayFolders({ limit: 30, provider, includeCompleted: false }).then(setDayFolders),
+      fetchUploadGroups({
+        limit: 30,
+        connectionId: selectedConnectionQuery,
+        includeCompleted: false,
+      }).then(setUploadGroups),
     ]);
-  }, [loadTasks, provider]);
+  }, [loadTasks, selectedConnectionQuery]);
 
-  const handleIgnoreDay = useCallback((id: string) => {
-    setConfirmAction({ kind: "ignore-day", id });
+  const handleIgnoreUploadGroup = useCallback((id: string) => {
+    setConfirmAction({ kind: "ignore-group", id });
   }, []);
 
-  const handleRestoreDay = useCallback(async (id: string) => {
-    await restoreDayFolder(id);
+  const handleRestoreUploadGroup = useCallback(async (id: string) => {
+    await restoreUploadGroup(id);
     await Promise.all([
       loadTasks(),
-      fetchDayFolders({ limit: 30, provider, includeCompleted: false }).then(setDayFolders),
+      fetchUploadGroups({
+        limit: 30,
+        connectionId: selectedConnectionQuery,
+        includeCompleted: false,
+      }).then(setUploadGroups),
     ]);
-  }, [loadTasks, provider]);
+  }, [loadTasks, selectedConnectionQuery]);
 
   const performCloseUploadGroup = useCallback(async (id: string) => {
     const summary = await closeUploadGroup(id);
@@ -323,11 +365,11 @@ export default function Dashboard() {
     });
   }, []);
 
-  const toggleDaySelection = useCallback((dayFolderId: string) => {
-    setSelectedDayFolderIds((current) => {
+  const toggleUploadGroupSelection = useCallback((uploadGroupId: string) => {
+    setSelectedUploadGroupIds((current) => {
       const next = new Set(current);
-      if (next.has(dayFolderId)) next.delete(dayFolderId);
-      else next.add(dayFolderId);
+      if (next.has(uploadGroupId)) next.delete(uploadGroupId);
+      else next.add(uploadGroupId);
       return next;
     });
   }, []);
@@ -339,13 +381,13 @@ export default function Dashboard() {
     const status = await startUploadQueue({
       scope,
       taskIds: scope === "selected" ? Array.from(selectedTaskIds) : [],
-      dayFolderIds:
-        scope === "selected" ? Array.from(selectedDayFolderIds) : [],
+      uploadGroupIds:
+        scope === "selected" ? Array.from(selectedUploadGroupIds) : [],
       overrideWindow,
     });
     setUploadQueueStatus(status);
     setSelectedTaskIds(new Set());
-    setSelectedDayFolderIds(new Set());
+    setSelectedUploadGroupIds(new Set());
     await refreshDashboard();
     showToast(
       status.priorityRemaining > 0
@@ -353,12 +395,12 @@ export default function Dashboard() {
         : "已开启上传队列",
       "success",
     );
-  }, [refreshDashboard, selectedDayFolderIds, selectedTaskIds]);
+  }, [refreshDashboard, selectedUploadGroupIds, selectedTaskIds]);
 
   const handleStartUpload = useCallback(async (
     scope: "selected" | "all-pending",
   ) => {
-    if (scope === "selected" && selectedTaskIds.size + selectedDayFolderIds.size === 0) {
+    if (scope === "selected" && selectedTaskIds.size + selectedUploadGroupIds.size === 0) {
       return;
     }
     const latestStatus = await fetchUploadQueueStatus();
@@ -367,7 +409,7 @@ export default function Dashboard() {
       return;
     }
     await performStartUpload(scope, false);
-  }, [performStartUpload, selectedDayFolderIds.size, selectedTaskIds.size]);
+  }, [performStartUpload, selectedUploadGroupIds.size, selectedTaskIds.size]);
 
   const performStopUpload = useCallback(async () => {
     const status = await stopUploadQueue({ mode: "after-current" });
@@ -385,47 +427,51 @@ export default function Dashboard() {
     await performStopUpload();
   }, [performStopUpload]);
 
-  const providerTasks = useMemo(
+  const visibleTasks = useMemo(
     () =>
-      tasks.filter((task) =>
-        task.destinations.some((destination) => destination.legacyProvider === provider),
-      ),
-    [tasks, provider],
+      selectedConnectionId === "all"
+        ? tasks
+        : tasks.filter((task) =>
+            task.destinations.some(
+              (destination) => destination.connectionId === selectedConnectionId,
+            ),
+          ),
+    [selectedConnectionId, tasks],
   );
   const independentTasks = useMemo(
-    () => providerTasks.filter((task) => !task.dayFolderId),
-    [providerTasks],
+    () => visibleTasks.filter((task) => !task.uploadGroupId),
+    [visibleTasks],
   );
-  const tasksByDayFolderId = useMemo(() => {
+  const tasksByUploadGroupId = useMemo(() => {
     const grouped = new Map<string, Task[]>();
-    for (const task of providerTasks) {
-      if (!task.dayFolderId) continue;
-      const current = grouped.get(task.dayFolderId) ?? [];
+    for (const task of visibleTasks) {
+      if (!task.uploadGroupId) continue;
+      const current = grouped.get(task.uploadGroupId) ?? [];
       current.push(task);
-      grouped.set(task.dayFolderId, current);
+      grouped.set(task.uploadGroupId, current);
     }
     return grouped;
-  }, [providerTasks]);
+  }, [visibleTasks]);
   const taskDirectoryTree = useMemo(
     () =>
       buildPathTree<DashboardTreeItem>([
-        ...dayFolders.map((dayFolder) => ({
-          id: `day:${dayFolder.id}`,
-          path: dayFolder.folderPath,
-          value: { kind: "dayFolder" as const, dayFolder },
+        ...uploadGroups.map((uploadGroup) => ({
+          id: `day:${uploadGroup.id}`,
+          path: uploadGroup.folderPath,
+          value: { kind: "uploadGroup" as const, uploadGroup },
         })),
-        ...providerTasks.map((task) => ({
+        ...visibleTasks.map((task) => ({
           id: `task:${task.id}`,
           path: task.folderPath,
           value: { kind: "task" as const, task },
         })),
       ]),
-    [dayFolders, providerTasks],
+    [uploadGroups, visibleTasks],
   );
   const hasTaskDirectories = taskDirectoryTree.length > 0;
   const selectedTaskCount = selectedTaskIds.size;
-  const selectedDayFolderCount = selectedDayFolderIds.size;
-  const selectedCount = selectedTaskCount + selectedDayFolderCount;
+  const selectedUploadGroupCount = selectedUploadGroupIds.size;
+  const selectedCount = selectedTaskCount + selectedUploadGroupCount;
   const enabledRules = useMemo(
     () => rules.filter((rule) => rule.enabled),
     [rules],
@@ -435,15 +481,12 @@ export default function Dashboard() {
     [rules],
   );
   const detailTask = useMemo(
-    () => providerTasks.find((task) => task.id === detailTaskId) ?? null,
-    [detailTaskId, providerTasks],
+    () => visibleTasks.find((task) => task.id === detailTaskId) ?? null,
+    [detailTaskId, visibleTasks],
   );
   const detailConnectionId = useMemo(
-    () =>
-      detailTask?.destinations.find(
-        (destination) => destination.legacyProvider === provider,
-      )?.connectionId,
-    [detailTask, provider],
+    () => (selectedConnectionId === "all" ? undefined : selectedConnectionId),
+    [selectedConnectionId],
   );
   const detailProgress = useTaskStore(
     useCallback(
@@ -457,7 +500,7 @@ export default function Dashboard() {
 
   const clearSelection = useCallback(() => {
     setSelectedTaskIds(new Set());
-    setSelectedDayFolderIds(new Set());
+    setSelectedUploadGroupIds(new Set());
   }, []);
 
   const openTaskDetail = useCallback((task: Task) => {
@@ -487,8 +530,8 @@ export default function Dashboard() {
         await performStartUpload(confirmAction.scope, true);
       } else if (confirmAction.kind === "stop-upload") {
         await performStopUpload();
-      } else if (confirmAction.kind === "ignore-day") {
-        await performIgnoreDay(confirmAction.id);
+      } else if (confirmAction.kind === "ignore-group") {
+        await performIgnoreUploadGroup(confirmAction.id);
       } else if (confirmAction.kind === "close-upload-group") {
         await performCloseUploadGroup(confirmAction.id);
       } else if (confirmAction.kind === "skip-task") {
@@ -502,7 +545,7 @@ export default function Dashboard() {
     confirmAction,
     performCancel,
     performCloseUploadGroup,
-    performIgnoreDay,
+    performIgnoreUploadGroup,
     performStartUpload,
     performStopUpload,
   ]);
@@ -529,7 +572,7 @@ export default function Dashboard() {
         variant: "warning" as const,
       };
     }
-    if (confirmAction.kind === "ignore-day") {
+    if (confirmAction.kind === "ignore-group") {
       return {
         title: "忽略该归档组",
         description:
@@ -567,24 +610,24 @@ export default function Dashboard() {
     !pathPreviewError;
 
   useEffect(() => {
-    const visibleTaskIds = new Set(providerTasks.map((task) => task.id));
+    const visibleTaskIds = new Set(visibleTasks.map((task) => task.id));
     setSelectedTaskIds((current) => {
       const next = new Set(
         Array.from(current).filter((taskId) => visibleTaskIds.has(taskId)),
       );
       return next.size === current.size ? current : next;
     });
-  }, [providerTasks]);
+  }, [visibleTasks]);
 
   useEffect(() => {
-    const visibleDayFolderIds = new Set(dayFolders.map((item) => item.id));
-    setSelectedDayFolderIds((current) => {
+    const visibleUploadGroupIds = new Set(uploadGroups.map((item) => item.id));
+    setSelectedUploadGroupIds((current) => {
       const next = new Set(
-        Array.from(current).filter((id) => visibleDayFolderIds.has(id)),
+        Array.from(current).filter((id) => visibleUploadGroupIds.has(id)),
       );
       return next.size === current.size ? current : next;
     });
-  }, [dayFolders]);
+  }, [uploadGroups]);
 
   return (
     <div className="p-6 space-y-6">
@@ -623,21 +666,28 @@ export default function Dashboard() {
 
       <QueueStatusBar
         status={uploadQueueStatus}
-        provider={provider}
-        taskCount={providerTasks.length}
-        dayFolderCount={dayFolders.length}
+        selectedConnectionName={selectedConnectionName}
+        taskCount={visibleTasks.length}
+        uploadGroupCount={uploadGroups.length}
       />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="inline-flex rounded-md border p-1 bg-muted/30">
-          {(["aliyun", "tencent"] as CloudProvider[]).map((item) => (
+          <Button
+            variant={selectedConnectionId === "all" ? "default" : "ghost"}
+            size="sm"
+            onClick={() => setSelectedConnectionId("all")}
+          >
+            全部
+          </Button>
+          {connections.map((item) => (
             <Button
-              key={item}
-              variant={provider === item ? "default" : "ghost"}
+              key={item.id}
+              variant={selectedConnectionId === item.id ? "default" : "ghost"}
               size="sm"
-              onClick={() => setProvider(item)}
+              onClick={() => setSelectedConnectionId(item.id)}
             >
-              {item === "aliyun" ? "阿里云" : "腾讯云"}
+              {item.name}
             </Button>
           ))}
         </div>
@@ -663,7 +713,7 @@ export default function Dashboard() {
 
       <BulkActionBar
         selectedTaskCount={selectedTaskCount}
-        selectedDayFolderCount={selectedDayFolderCount}
+        selectedUploadGroupCount={selectedUploadGroupCount}
         onStartSelected={() => handleStartUpload("selected")}
         onClearSelection={clearSelection}
       />
@@ -677,50 +727,50 @@ export default function Dashboard() {
       {hasTaskDirectories && (
         <section>
           <h2 className="text-sm font-semibold text-muted-foreground mb-3">
-            任务目录 ({dayFolders.length} 组 / {providerTasks.length} 任务)
+            任务目录 ({uploadGroups.length} 组 / {visibleTasks.length} 任务)
           </h2>
           <PathTree
             nodes={taskDirectoryTree}
             className="rounded-md border bg-muted/10 p-2"
             renderNodeBody={({ node }) => {
-              const dayItems = node.items.filter(
-                (item) => item.value.kind === "dayFolder",
+              const uploadGroupItems = node.items.filter(
+                (item) => item.value.kind === "uploadGroup",
               );
               const taskItems = node.items.filter(
                 (item) => item.value.kind === "task",
               );
 
-              if (dayItems.length === 0 && taskItems.length === 0) {
+              if (uploadGroupItems.length === 0 && taskItems.length === 0) {
                 return null;
               }
 
               return (
                 <div className="space-y-3">
-                  {dayItems.map((item) => {
-                    if (item.value.kind !== "dayFolder") return null;
-                    const dayFolder = item.value.dayFolder;
-                    const childTasks = tasksByDayFolderId.get(dayFolder.id) ?? [];
+                  {uploadGroupItems.map((item) => {
+                    if (item.value.kind !== "uploadGroup") return null;
+                    const uploadGroup = item.value.uploadGroup;
+                    const childTasks = tasksByUploadGroupId.get(uploadGroup.id) ?? [];
 
                     return (
-                      <div key={dayFolder.id} className="flex gap-3">
+                      <div key={uploadGroup.id} className="flex gap-3">
                         <input
                           type="checkbox"
-                          checked={selectedDayFolderIds.has(dayFolder.id)}
-                          onChange={() => toggleDaySelection(dayFolder.id)}
+                          checked={selectedUploadGroupIds.has(uploadGroup.id)}
+                          onChange={() => toggleUploadGroupSelection(uploadGroup.id)}
                           className="mt-5 h-4 w-4 shrink-0 rounded"
-                          aria-label={`选择归档组 ${dayFolder.groupKey}`}
+                          aria-label={`选择归档组 ${uploadGroup.groupKey}`}
                         />
                         <div className="min-w-0 flex-1">
-                          <DayFolderCardWithSpeed
-                            dayFolder={dayFolder}
+                          <UploadGroupCardWithSpeed
+                            uploadGroup={uploadGroup}
                             tasks={childTasks}
-                            provider={provider}
-                            onIgnore={handleIgnoreDay}
-                            onRestore={handleRestoreDay}
+                            selectedConnectionId={selectedConnectionId}
+                            onIgnore={handleIgnoreUploadGroup}
+                            onRestore={handleRestoreUploadGroup}
                             onClose={handleCloseUploadGroup}
                             canCloseManually={
-                              dayFolder.uploadGroupStatus === "open" &&
-                              ruleCompletionModeById.get(dayFolder.ruleId || "") === "manual"
+                              uploadGroup.uploadGroupStatus === "open" &&
+                              ruleCompletionModeById.get(uploadGroup.ruleId || "") === "manual"
                             }
                           />
                         {childTasks.length === 0 && (
@@ -749,7 +799,7 @@ export default function Dashboard() {
                         <div className="min-w-0 flex-1">
                           <TaskCardWithProgress
                             task={task}
-                            provider={provider}
+                            selectedConnectionId={selectedConnectionId}
                             onPause={handlePause}
                             onResume={handleResume}
                             onCancel={handleCancel}
@@ -918,7 +968,7 @@ export default function Dashboard() {
 
       <TaskDetailDrawer
         task={detailTask}
-        provider={provider}
+        selectedConnectionId={selectedConnectionId}
         open={Boolean(detailTask)}
         progress={detailProgress}
         onOpenChange={(open) => {
@@ -937,7 +987,7 @@ export default function Dashboard() {
 
 const TaskCardWithProgress = memo(function TaskCardWithProgress({
   task,
-  provider,
+  selectedConnectionId,
   onPause,
   onResume,
   onCancel,
@@ -946,7 +996,7 @@ const TaskCardWithProgress = memo(function TaskCardWithProgress({
   onOpenDetail,
 }: {
   task: Task;
-  provider: CloudProvider;
+  selectedConnectionId: ConnectionSelection;
   onPause: (id: string) => void;
   onResume: (id: string) => void;
   onCancel: (id: string) => void;
@@ -954,9 +1004,8 @@ const TaskCardWithProgress = memo(function TaskCardWithProgress({
   onRestore: (id: string) => void;
   onOpenDetail: (task: Task) => void;
 }) {
-  const connectionId = task.destinations.find(
-    (destination) => destination.legacyProvider === provider,
-  )?.connectionId;
+  const connectionId =
+    selectedConnectionId === "all" ? undefined : selectedConnectionId;
   const progress = useTaskStore(
     useCallback(
       (state) =>
@@ -970,7 +1019,7 @@ const TaskCardWithProgress = memo(function TaskCardWithProgress({
   return (
     <TaskCard
       task={task}
-      provider={provider}
+      selectedConnectionId={selectedConnectionId}
       progress={progress}
       onPause={onPause}
       onResume={onResume}
@@ -982,18 +1031,18 @@ const TaskCardWithProgress = memo(function TaskCardWithProgress({
   );
 });
 
-const DayFolderCardWithSpeed = memo(function DayFolderCardWithSpeed({
-  dayFolder,
+const UploadGroupCardWithSpeed = memo(function UploadGroupCardWithSpeed({
+  uploadGroup,
   tasks,
-  provider,
+  selectedConnectionId,
   onIgnore,
   onRestore,
   onClose,
   canCloseManually,
 }: {
-  dayFolder: DayFolderSummary;
+  uploadGroup: UploadGroupSummary;
   tasks: Task[];
-  provider: CloudProvider;
+  selectedConnectionId: ConnectionSelection;
   onIgnore: (id: string) => void;
   onRestore: (id: string) => void;
   onClose: (id: string) => void;
@@ -1005,7 +1054,11 @@ const DayFolderCardWithSpeed = memo(function DayFolderCardWithSpeed({
         tasks.reduce(
           (sum, task) => {
             const speed = task.destinations
-              .filter((destination) => destination.legacyProvider === provider)
+              .filter(
+                (destination) =>
+                  selectedConnectionId === "all" ||
+                  destination.connectionId === selectedConnectionId,
+              )
               .reduce(
                 (total, destination) =>
                   total +
@@ -1016,13 +1069,13 @@ const DayFolderCardWithSpeed = memo(function DayFolderCardWithSpeed({
           },
           0,
         ),
-      [provider, tasks],
+      [selectedConnectionId, tasks],
     ),
   );
 
   return (
-    <DayFolderCard
-      dayFolder={dayFolder}
+    <UploadGroupCard
+      uploadGroup={uploadGroup}
       tasks={tasks}
       speed={speed}
       onIgnore={onIgnore}

@@ -6,9 +6,9 @@ import { tmpdir } from 'node:os'
 import {
   discoverCurrentDayDirectory,
   isWorkDirName
-} from '../src/main/services/date-directory-discovery'
+} from '../src/main/services/legacy-date-discovery'
 
-test('discovers only the current date folder and splits work dirs from ignored dirs', async () => {
+test('legacy date discovery finds the current date folder and splits work dirs from ignored dirs', async () => {
   const root = mkdtempSync(join(tmpdir(), 'uploader-scan-'))
 
   try {

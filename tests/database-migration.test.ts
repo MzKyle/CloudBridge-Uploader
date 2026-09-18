@@ -57,7 +57,7 @@ test('migration adds profile and object key template columns', () => {
     .map((column) => column.name)
   const destinationColumns = (db.pragma('table_info(task_destinations)') as Array<{ name: string }>)
     .map((column) => column.name)
-  const dayFolderColumns = (db.pragma('table_info(day_folders)') as Array<{ name: string }>)
+  const uploadGroupColumns = (db.pragma('table_info(day_folders)') as Array<{ name: string }>)
     .map((column) => column.name)
 
   assert.ok(taskColumns.includes('profile_id'))
@@ -65,10 +65,10 @@ test('migration adds profile and object key template columns', () => {
   assert.ok(taskColumns.includes('profile_snapshot_json'))
   assert.ok(destinationColumns.includes('path_mode'))
   assert.ok(destinationColumns.includes('object_key_template'))
-  assert.ok(dayFolderColumns.includes('last_content_activity_at'))
+  assert.ok(uploadGroupColumns.includes('last_content_activity_at'))
 })
 
-test('migration backfills legacy day folders into upload groups', () => {
+test('migration backfills legacy day_folders table into upload groups', () => {
   const db = createLegacyDatabase()
   const now = new Date().toISOString()
   db.exec(`

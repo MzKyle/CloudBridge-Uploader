@@ -128,7 +128,7 @@ export const TASK_STATUS_LABELS: Record<string, string> = {
   skipped: '已跳过'
 }
 
-export const DAY_FOLDER_STATUS_LABELS: Record<string, string> = {
+export const UPLOAD_GROUP_PROCESSING_STATUS_LABELS: Record<string, string> = {
   collecting: '采集中',
   processing: '处理中',
   blocked: '有阻塞',

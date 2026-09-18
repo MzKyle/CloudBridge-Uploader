@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DEFAULT_SETTINGS } from '../src/shared/constants'
 import { runMigrations, setDbForTests } from '../src/main/db/database'
-import { DayFolderRepo } from '../src/main/db/day-folder.repo'
+import { UploadGroupRepo } from '../src/main/db/upload-group.repo'
 import { SettingsRepo } from '../src/main/db/settings.repo'
 import { TaskRepo } from '../src/main/db/task.repo'
 import { getTaskDestinationRepo } from '../src/main/db/task-destination.repo'
@@ -58,20 +58,20 @@ function createCleanupFixtureForProfile(
   mkdirSync(taskPath, { recursive: true })
   writeFileSync(filePath, 'uploaded')
 
-  const dayFolderRepo = new DayFolderRepo()
-  const group = dayFolderRepo.ensure(
+  const uploadGroupRepo = new UploadGroupRepo()
+  const group = uploadGroupRepo.ensure(
     groupPath,
     groupName,
     { batch: groupName },
     ruleId
   )
-  dayFolderRepo.updateDiscovery(group.id, ['session-1'])
+  uploadGroupRepo.updateDiscovery(group.id, ['session-1'])
 
   const taskRepo = new TaskRepo()
   const task = taskRepo.create({
     folderPath: taskPath,
     folderName: 'session-1',
-    dayFolderId: group.id,
+    uploadGroupId: group.id,
     uploadRelativePath: `${groupName}/session-1`,
     destinations: [
       {
@@ -144,11 +144,11 @@ function markFixtureSafeAndSealed(
   fixture: CleanupFixture,
   sealedAt = '2000-01-01T00:00:00.000Z'
 ): void {
-  const dayFolderRepo = new DayFolderRepo()
+  const uploadGroupRepo = new UploadGroupRepo()
   const taskRepo = new TaskRepo()
   const destinationRepo = getTaskDestinationRepo()
 
-  dayFolderRepo.transitionStatus(fixture.groupId, 'sealed')
+  uploadGroupRepo.transitionStatus(fixture.groupId, 'sealed')
   taskRepo.updateStatus(fixture.taskId, 'completed')
   destinationRepo.updateStatus(fixture.taskId, 'aliyun-prod', 'completed')
   db.prepare(`
@@ -176,27 +176,27 @@ test('cleanup safety requires sealed groups with completed tasks, destinations, 
   const root = mkdtempSync(join(tmpdir(), 'cleanup-safe-'))
   try {
     const fixture = createCleanupFixture(root)
-    const dayFolderRepo = new DayFolderRepo()
+    const uploadGroupRepo = new UploadGroupRepo()
     const taskRepo = new TaskRepo()
     const destinationRepo = getTaskDestinationRepo()
 
-    assert.equal(dayFolderRepo.isSafeToClean(fixture.groupId), false)
+    assert.equal(uploadGroupRepo.isSafeToClean(fixture.groupId), false)
 
-    dayFolderRepo.transitionStatus(fixture.groupId, 'sealed')
-    assert.equal(dayFolderRepo.isSafeToClean(fixture.groupId), false)
+    uploadGroupRepo.transitionStatus(fixture.groupId, 'sealed')
+    assert.equal(uploadGroupRepo.isSafeToClean(fixture.groupId), false)
 
     taskRepo.updateStatus(fixture.taskId, 'completed')
-    assert.equal(dayFolderRepo.isSafeToClean(fixture.groupId), false)
+    assert.equal(uploadGroupRepo.isSafeToClean(fixture.groupId), false)
 
     destinationRepo.updateStatus(fixture.taskId, 'aliyun-prod', 'completed')
-    assert.equal(dayFolderRepo.isSafeToClean(fixture.groupId), false)
+    assert.equal(uploadGroupRepo.isSafeToClean(fixture.groupId), false)
 
     db.prepare(`
       UPDATE task_files
       SET status = 'completed', stable_count = 2
       WHERE id = ?
     `).run(fixture.fileId)
-    assert.equal(dayFolderRepo.isSafeToClean(fixture.groupId), true)
+    assert.equal(uploadGroupRepo.isSafeToClean(fixture.groupId), true)
   } finally {
     rmSync(root, { recursive: true, force: true })
     closeDatabase(db)
@@ -208,7 +208,7 @@ test('cleanup service deletes and marks only safe sealed upload groups', async (
   const root = mkdtempSync(join(tmpdir(), 'cleanup-delete-'))
   try {
     const fixture = createCleanupFixture(root)
-    const dayFolderRepo = new DayFolderRepo()
+    const uploadGroupRepo = new UploadGroupRepo()
     const taskRepo = new TaskRepo()
     const destinationRepo = getTaskDestinationRepo()
 
@@ -231,7 +231,7 @@ test('cleanup service deletes and marks only safe sealed upload groups', async (
     await new CleanupService().cleanup()
     assert.equal(existsSync(fixture.groupPath), true)
 
-    dayFolderRepo.transitionStatus(fixture.groupId, 'sealed')
+    uploadGroupRepo.transitionStatus(fixture.groupId, 'sealed')
     taskRepo.updateStatus(fixture.taskId, 'completed')
     destinationRepo.updateStatus(fixture.taskId, 'aliyun-prod', 'completed')
     db.prepare(`
@@ -252,7 +252,7 @@ test('cleanup service deletes and marks only safe sealed upload groups', async (
     await new CleanupService().cleanup()
 
     assert.equal(existsSync(fixture.groupPath), false)
-    assert.equal(dayFolderRepo.getById(fixture.groupId)?.uploadGroupStatus, 'cleaned')
+    assert.equal(uploadGroupRepo.getById(fixture.groupId)?.uploadGroupStatus, 'cleaned')
   } finally {
     rmSync(root, { recursive: true, force: true })
     closeDatabase(db)

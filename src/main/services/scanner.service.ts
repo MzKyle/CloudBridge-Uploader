@@ -19,15 +19,15 @@ import {
   type RuleUploadSnapshot
 } from '@shared/upload-rule'
 import { getTaskRepo } from '../db/task.repo'
-import { getDayFolderRepo } from '../db/day-folder.repo'
+import { getUploadGroupRepo } from '../db/upload-group.repo'
 import { getSettingsRepo } from '../db/settings.repo'
-import { getDayFolderService } from './day-folder.service'
+import { getUploadGroupService } from './upload-group.service'
 import { getTaskQueueService } from './task-queue.service'
 import { FileFilterService } from './file-filter.service'
 import {
   discoverUploadGroups,
   type DiscoveredUploadTaskDirectory
-} from './date-directory-discovery'
+} from './upload-group-discovery'
 import type {
   StabilityConfig,
   ScannerStatus,
@@ -39,7 +39,7 @@ import type { TaskDestinationCreateInput } from '../db/task-destination.repo'
 
 interface PendingDir {
   path: string
-  dayFolderId: string
+  uploadGroupId: string
   groupKey: string
   variables: PathVariables
   folderName: string
@@ -272,10 +272,10 @@ export class ScannerService {
           rule.completion.mode === 'marker-file' &&
           existsSync(join(group.folderPath, rule.completion.markerFile))
         if (shouldCloseByRollover || shouldCloseByMarker) {
-          const uploadGroup = getDayFolderRepo().getByPath(group.folderPath)
+          const uploadGroup = getUploadGroupRepo().getByPath(group.folderPath)
           if (uploadGroup?.uploadGroupStatus === 'open') {
-            getDayFolderRepo().markClosing(uploadGroup.id)
-            getDayFolderService().refresh(uploadGroup.id)
+            getUploadGroupRepo().markClosing(uploadGroup.id)
+            getUploadGroupService().refresh(uploadGroup.id)
           }
         }
 
@@ -298,7 +298,7 @@ export class ScannerService {
     seenChildPaths: Set<string>,
     rule: UploadRule
   ): Promise<{ scanned: number; newFound: number; existing: number; ignored: number; skipped: number }> {
-    const dayFolder = getDayFolderRepo().ensure(
+    const uploadGroup = getUploadGroupRepo().ensure(
       groupPath,
       groupKey,
       groupVariables,
@@ -331,11 +331,11 @@ export class ScannerService {
 
         const existingTask = getTaskRepo().getByFolderPath(childPath)
         if (existingTask) {
-          this.attachTaskToDayFolder(existingTask, dayFolder.id)
+          this.attachTaskToUploadGroup(existingTask, uploadGroup.id)
           getTaskRepo().updateGroupVariables(existingTask.id, variables)
           this.pendingDirs.delete(childPath)
           if (
-            dayFolder.ignored &&
+            uploadGroup.ignored &&
             existingTask.status !== 'completed' &&
             existingTask.status !== 'synced'
           ) {
@@ -354,7 +354,7 @@ export class ScannerService {
           const task = this.registerIgnoredDir(
             childPath,
             childName,
-            dayFolder.id,
+            uploadGroup.id,
             uploadRelativePath,
             variables,
             targetSnapshot
@@ -369,7 +369,7 @@ export class ScannerService {
           log.info('发现新任务目录, 注册持续同步任务:', childPath)
           const pending: PendingDir = {
             path: childPath,
-            dayFolderId: dayFolder.id,
+            uploadGroupId: uploadGroup.id,
             groupKey,
             variables,
             folderName: childName,
@@ -380,7 +380,7 @@ export class ScannerService {
             ruleSnapshot: targetSnapshot
           }
           const task = this.registerNewDir(pending)
-          if (dayFolder.ignored) {
+          if (uploadGroup.ignored) {
             getTaskRepo().skip(task.id, '用户忽略整个归档组')
             this.broadcastTaskStatus(task.id, task.status, 'skipped')
           } else {
@@ -397,7 +397,7 @@ export class ScannerService {
       log.error('扫描归档组失败:', groupPath, err)
     }
 
-    getDayFolderService().refresh(dayFolder.id, childNames)
+    getUploadGroupService().refresh(uploadGroup.id, childNames)
     return { scanned, newFound, existing, ignored, skipped }
   }
 
@@ -423,20 +423,20 @@ export class ScannerService {
     const task = this.ensureTaskRegistered(
       pending.path,
       pending.folderName,
-      pending.dayFolderId,
+      pending.uploadGroupId,
       pending.uploadRelativePath,
       snapshot,
       pending.variables
     )
     log.info('任务目录已注册为上传任务:', pending.path)
-    getDayFolderService().refresh(pending.dayFolderId)
+    getUploadGroupService().refresh(pending.uploadGroupId)
     return task
   }
 
   private registerIgnoredDir(
     dirPath: string,
     folderName: string,
-    dayFolderId: string,
+    uploadGroupId: string,
     uploadRelativePath: string,
     variables: PathVariables,
     targetSnapshot: RuleUploadSnapshot
@@ -444,7 +444,7 @@ export class ScannerService {
     const task = this.ensureTaskRegistered(
       dirPath,
       folderName,
-      dayFolderId,
+      uploadGroupId,
       uploadRelativePath,
       targetSnapshot,
       variables
@@ -453,7 +453,7 @@ export class ScannerService {
       getTaskRepo().skip(task.id, NON_WORK_DIR_REASON)
       log.info('已忽略非任务目录:', dirPath)
     }
-    getDayFolderService().refresh(dayFolderId)
+    getUploadGroupService().refresh(uploadGroupId)
     return getTaskRepo().getById(task.id) || task
   }
 
@@ -575,7 +575,7 @@ export class ScannerService {
       if (task.status !== 'synced') {
         getTaskQueueService().cancelRunningTask(task.id)
         getTaskRepo().skip(task.id, '源目录已删除')
-        getDayFolderService().refreshForTask(task.id)
+        getUploadGroupService().refreshForTask(task.id)
         this.broadcastTaskStatus(task.id, task.status, 'skipped')
       }
       return
@@ -587,7 +587,7 @@ export class ScannerService {
         task.ruleSnapshot?.filter || settings.filter
       )
       const stableChecks =
-        task.sourceType === 'local' && task.dayFolderId
+        task.sourceType === 'local' && task.uploadGroupId
           ? Math.max(2, settings.stability.checkCount || 2)
           : 1
       await getTaskRepo().reconcileFileBatches(
@@ -599,12 +599,12 @@ export class ScannerService {
       if (updated && updated.status !== task.status) {
         this.broadcastTaskStatus(task.id, task.status, updated.status)
       }
-      getDayFolderService().refreshForTask(task.id)
+      getUploadGroupService().refreshForTask(task.id)
     } catch (err) {
       if (!(await this.pathExists(task.folderPath))) {
         getTaskQueueService().cancelRunningTask(task.id)
         getTaskRepo().skip(task.id, '源目录已删除')
-        getDayFolderService().refreshForTask(task.id)
+        getUploadGroupService().refreshForTask(task.id)
         this.broadcastTaskStatus(task.id, task.status, 'skipped')
         return
       }
@@ -642,7 +642,7 @@ export class ScannerService {
       }
       getTaskQueueService().cancelRunningTask(task.id)
       getTaskRepo().skip(task.id, '源目录已删除')
-      getDayFolderService().refreshForTask(task.id)
+      getUploadGroupService().refreshForTask(task.id)
       this.broadcastTaskStatus(task.id, task.status, 'skipped')
 
       if ((index + 1) % SCAN_BATCH_SIZE === 0) {
@@ -668,7 +668,7 @@ export class ScannerService {
   private ensureTaskRegistered(
     dirPath: string,
     folderName: string,
-    dayFolderId: string,
+    uploadGroupId: string,
     uploadRelativePath: string,
     targetSnapshot?: RuleUploadSnapshot,
     groupVariables: PathVariables = {}
@@ -676,7 +676,7 @@ export class ScannerService {
     const taskRepo = getTaskRepo()
     const existing = taskRepo.getByFolderPath(dirPath)
     if (existing) {
-      this.attachTaskToDayFolder(existing, dayFolderId)
+      this.attachTaskToUploadGroup(existing, uploadGroupId)
       return taskRepo.getById(existing.id)!
     }
     const settings = getSettingsRepo().getAll()
@@ -693,7 +693,7 @@ export class ScannerService {
         snapshot,
         uploadRelativePath
       ),
-      dayFolderId,
+      uploadGroupId,
       uploadRelativePath,
       sourceType: 'local',
       ruleId: snapshot.ruleId,
@@ -718,12 +718,12 @@ export class ScannerService {
     }))
   }
 
-  private attachTaskToDayFolder(
+  private attachTaskToUploadGroup(
     task: Task,
-    dayFolderId: string
+    uploadGroupId: string
   ): void {
-    if (task.dayFolderId !== dayFolderId) {
-      getTaskRepo().updateDayFolderId(task.id, dayFolderId)
+    if (task.uploadGroupId !== uploadGroupId) {
+      getTaskRepo().updateUploadGroupId(task.id, uploadGroupId)
     }
   }
 

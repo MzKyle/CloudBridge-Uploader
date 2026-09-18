@@ -11,9 +11,9 @@ import {
   uploadGroupSiblingStreamKey
 } from '../src/shared/upload-group'
 import { runMigrations, setDbForTests } from '../src/main/db/database'
-import { DayFolderRepo } from '../src/main/db/day-folder.repo'
+import { UploadGroupRepo } from '../src/main/db/upload-group.repo'
 import { TaskRepo } from '../src/main/db/task.repo'
-import { DayFolderService } from '../src/main/services/day-folder.service'
+import { UploadGroupService } from '../src/main/services/upload-group.service'
 import type { CompletionPolicy, UploadRule } from '../src/shared/types'
 
 function createDatabase(): Database.Database {
@@ -52,21 +52,21 @@ function createGroupWithTask(
   const taskPath = join(groupPath, 'session-1')
   mkdirSync(taskPath, { recursive: true })
 
-  const dayFolderRepo = new DayFolderRepo()
+  const uploadGroupRepo = new UploadGroupRepo()
   const profile = createProfile(root, completion)
-  const group = dayFolderRepo.ensure(
+  const group = uploadGroupRepo.ensure(
     groupPath,
     groupName,
     { batch: groupName },
     profile.id
   )
-  dayFolderRepo.updateDiscovery(group.id, ['session-1'])
+  uploadGroupRepo.updateDiscovery(group.id, ['session-1'])
 
   const taskRepo = new TaskRepo()
   const task = taskRepo.create({
     folderPath: taskPath,
     folderName: 'session-1',
-    dayFolderId: group.id,
+    uploadGroupId: group.id,
     uploadRelativePath: `${groupName}/session-1`,
     destinations: [
       {
@@ -106,16 +106,16 @@ test('refresh and recalculation do not update upload group content activity', ()
   const root = mkdtempSync(join(tmpdir(), 'group-activity-refresh-'))
   try {
     const { groupId } = createGroupWithTask(root, { mode: 'manual' })
-    const dayFolderRepo = new DayFolderRepo()
+    const uploadGroupRepo = new UploadGroupRepo()
     const frozen = '2000-01-01T00:00:00.000Z'
     setContentActivity(db, groupId, frozen)
 
-    dayFolderRepo.updateGroupMetadata(groupId, 'batch-1', { batch: 'batch-1' }, 'rule-1')
-    dayFolderRepo.updateDiscovery(groupId, ['session-1'])
-    dayFolderRepo.recalculate(groupId, new Date('2026-09-13T10:00:00.000Z'))
-    new DayFolderService().refresh(groupId)
+    uploadGroupRepo.updateGroupMetadata(groupId, 'batch-1', { batch: 'batch-1' }, 'rule-1')
+    uploadGroupRepo.updateDiscovery(groupId, ['session-1'])
+    uploadGroupRepo.recalculate(groupId, new Date('2026-09-13T10:00:00.000Z'))
+    new UploadGroupService().refresh(groupId)
 
-    assert.equal(dayFolderRepo.getById(groupId)?.lastContentActivityAt, frozen)
+    assert.equal(uploadGroupRepo.getById(groupId)?.lastContentActivityAt, frozen)
   } finally {
     rmSync(root, { recursive: true, force: true })
     closeDatabase(db)
@@ -132,23 +132,23 @@ test('new tasks and file content changes update upload group content activity', 
     mkdirSync(firstTaskPath, { recursive: true })
     mkdirSync(secondTaskPath, { recursive: true })
 
-    const dayFolderRepo = new DayFolderRepo()
+    const uploadGroupRepo = new UploadGroupRepo()
     const taskRepo = new TaskRepo()
     const profile = createProfile(root, { mode: 'inactivity', idleMinutes: 5 })
-    const group = dayFolderRepo.ensure(groupPath, 'batch-1', {}, profile.id)
+    const group = uploadGroupRepo.ensure(groupPath, 'batch-1', {}, profile.id)
     const frozen = '2000-01-01T00:00:00.000Z'
     setContentActivity(db, group.id, frozen)
 
     const firstTask = taskRepo.create({
       folderPath: firstTaskPath,
       folderName: 'session-1',
-      dayFolderId: group.id,
+      uploadGroupId: group.id,
       uploadRelativePath: 'batch-1/session-1',
       ruleId: profile.id,
       ruleName: profile.name,
       ruleSnapshot: profile
     })
-    assert.notEqual(dayFolderRepo.getById(group.id)?.lastContentActivityAt, frozen)
+    assert.notEqual(uploadGroupRepo.getById(group.id)?.lastContentActivityAt, frozen)
 
     setContentActivity(db, group.id, frozen)
     taskRepo.reconcileFiles(
@@ -156,15 +156,15 @@ test('new tasks and file content changes update upload group content activity', 
       [{ relativePath: 'data.bin', size: 10, mtimeMs: 100 }],
       2
     )
-    assert.notEqual(dayFolderRepo.getById(group.id)?.lastContentActivityAt, frozen)
+    assert.notEqual(uploadGroupRepo.getById(group.id)?.lastContentActivityAt, frozen)
 
-    const afterInsert = dayFolderRepo.getById(group.id)?.lastContentActivityAt
+    const afterInsert = uploadGroupRepo.getById(group.id)?.lastContentActivityAt
     taskRepo.reconcileFiles(
       firstTask.id,
       [{ relativePath: 'data.bin', size: 10, mtimeMs: 100 }],
       2
     )
-    assert.equal(dayFolderRepo.getById(group.id)?.lastContentActivityAt, afterInsert)
+    assert.equal(uploadGroupRepo.getById(group.id)?.lastContentActivityAt, afterInsert)
 
     setContentActivity(db, group.id, frozen)
     taskRepo.reconcileFiles(
@@ -172,19 +172,19 @@ test('new tasks and file content changes update upload group content activity', 
       [{ relativePath: 'data.bin', size: 12, mtimeMs: 200 }],
       2
     )
-    assert.notEqual(dayFolderRepo.getById(group.id)?.lastContentActivityAt, frozen)
+    assert.notEqual(uploadGroupRepo.getById(group.id)?.lastContentActivityAt, frozen)
 
     setContentActivity(db, group.id, frozen)
     taskRepo.create({
       folderPath: secondTaskPath,
       folderName: 'session-2',
-      dayFolderId: group.id,
+      uploadGroupId: group.id,
       uploadRelativePath: 'batch-1/session-2',
       ruleId: profile.id,
       ruleName: profile.name,
       ruleSnapshot: profile
     })
-    assert.notEqual(dayFolderRepo.getById(group.id)?.lastContentActivityAt, frozen)
+    assert.notEqual(uploadGroupRepo.getById(group.id)?.lastContentActivityAt, frozen)
   } finally {
     rmSync(root, { recursive: true, force: true })
     closeDatabase(db)
@@ -200,12 +200,12 @@ test('inactivity completion uses last content activity instead of record updates
       { mode: 'inactivity', idleMinutes: 5 },
       'completed'
     )
-    const dayFolderRepo = new DayFolderRepo()
+    const uploadGroupRepo = new UploadGroupRepo()
 
     setContentActivity(db, groupId, '2026-09-13T10:00:00.000Z')
-    dayFolderRepo.updateGroupMetadata(groupId, 'batch-1', { batch: 'batch-1' }, 'rule-1')
+    uploadGroupRepo.updateGroupMetadata(groupId, 'batch-1', { batch: 'batch-1' }, 'rule-1')
     assert.equal(
-      dayFolderRepo.recalculate(
+      uploadGroupRepo.recalculate(
         groupId,
         new Date('2026-09-13T10:06:00.000Z')
       )?.uploadGroupStatus,
@@ -220,7 +220,7 @@ test('inactivity completion uses last content activity instead of record updates
     )
     setContentActivity(db, freshGroupId, '2026-09-13T10:04:00.000Z')
     assert.equal(
-      dayFolderRepo.recalculate(
+      uploadGroupRepo.recalculate(
         freshGroupId,
         new Date('2026-09-13T10:06:00.000Z')
       )?.uploadGroupStatus,
@@ -248,7 +248,7 @@ test('manual close moves open groups to closing and seals after terminal tasks',
   const root = mkdtempSync(join(tmpdir(), 'group-manual-close-'))
   try {
     const { groupId, taskId } = createGroupWithTask(root, { mode: 'manual' })
-    const service = new DayFolderService()
+    const service = new UploadGroupService()
 
     assert.equal(service.requestCloseUploadGroup(groupId)?.uploadGroupStatus, 'closing')
 

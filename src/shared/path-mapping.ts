@@ -1,4 +1,4 @@
-import { joinOssPath } from './day-folder'
+import { joinOssPath } from './upload-path'
 import type { PathMappingConfig, PathVariables } from './types'
 
 const BUILTIN_PATH_VARIABLES = new Set([

@@ -1,7 +1,7 @@
 import { getRuleSourceDirectories } from '@shared/scan-config'
 import type {
   CleanupPolicy,
-  DayFolderSummary,
+  UploadGroupSummary,
   Task,
   UploadRule
 } from '@shared/types'
@@ -16,8 +16,8 @@ export interface ResolvedCleanupPolicyForGroup {
 }
 
 export function resolveCleanupPolicyForGroup(
-  group: DayFolderSummary,
-  tasks: Task[] = getTaskRepo().listByDayFolder(group.id)
+  group: UploadGroupSummary,
+  tasks: Task[] = getTaskRepo().listByUploadGroup(group.id)
 ): ResolvedCleanupPolicyForGroup {
   const settings = getSettingsRepo().getAll()
   const snapshotRule = findSnapshotRule(group, tasks)
@@ -53,7 +53,7 @@ function firstNonEmpty(...values: string[][]): string[] {
 }
 
 function findSnapshotRule(
-  group: DayFolderSummary,
+  group: UploadGroupSummary,
   tasks: Task[]
 ): UploadRule | null {
   const orderedTasks = [...tasks].sort((a, b) =>

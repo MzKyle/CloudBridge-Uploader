@@ -41,7 +41,7 @@ function rowToTask(
     ossPrefix: (row.oss_prefix as string) || '',
     destinations:
       destinations ?? getTaskDestinationRepo().listByTask(row.id as string),
-    dayFolderId: (row.day_folder_id as string) || null,
+    uploadGroupId: (row.day_folder_id as string) || null,
     uploadRelativePath: (row.upload_relative_path as string | null | undefined) ?? (row.folder_name as string),
     errorMessage: (row.error_message as string) || null,
     sourceType: row.source_type as SourceType,
@@ -78,13 +78,13 @@ function safeParseVariables(value: unknown): PathVariables {
   }
 }
 
-function markDayFolderContentActivity(dayFolderId: string | null | undefined, occurredAt: string): void {
-  if (!dayFolderId) return
+function markUploadGroupContentActivity(uploadGroupId: string | null | undefined, occurredAt: string): void {
+  if (!uploadGroupId) return
   getDb().prepare(
     `UPDATE day_folders
      SET last_content_activity_at = ?, updated_at = ?
      WHERE id = ?`
-  ).run(occurredAt, occurredAt, dayFolderId)
+  ).run(occurredAt, occurredAt, uploadGroupId)
 }
 
 const UPLOAD_QUEUE_CANDIDATE_STATUSES: TaskStatus[] = [
@@ -296,7 +296,7 @@ export class TaskRepo {
     folderName: string
     ossPrefix?: string
     destinations?: TaskDestinationCreateInput[]
-    dayFolderId?: string
+    uploadGroupId?: string
     uploadRelativePath?: string
     sourceType?: SourceType
     sourceMachineId?: string
@@ -330,7 +330,7 @@ export class TaskRepo {
       params.folderName,
       params.ossPrefix || '',
       'aliyun',
-      params.dayFolderId || null,
+      params.uploadGroupId || null,
       uploadRelativePath,
       params.sourceType || 'local',
       params.sourceMachineId || null,
@@ -346,28 +346,28 @@ export class TaskRepo {
       normalizedDestinations,
       'pending'
     )
-    markDayFolderContentActivity(params.dayFolderId, now)
+    markUploadGroupContentActivity(params.uploadGroupId, now)
     return this.getById(id)!
   }
 
-  updateDayFolderId(id: string, dayFolderId: string): void {
+  updateUploadGroupId(id: string, uploadGroupId: string): void {
     const now = new Date().toISOString()
     getDb().prepare(
       `UPDATE tasks
        SET day_folder_id = ?, updated_at = ?
        WHERE id = ?`
-    ).run(dayFolderId, now, id)
-    markDayFolderContentActivity(dayFolderId, now)
+    ).run(uploadGroupId, now, id)
+    markUploadGroupContentActivity(uploadGroupId, now)
   }
 
-  updateDayFolderMetadata(id: string, dayFolderId: string, uploadRelativePath: string): void {
+  updateUploadGroupMetadata(id: string, uploadGroupId: string, uploadRelativePath: string): void {
     const now = new Date().toISOString()
     getDb().prepare(
       `UPDATE tasks
        SET day_folder_id = ?, upload_relative_path = ?, updated_at = ?
        WHERE id = ?`
-    ).run(dayFolderId, uploadRelativePath, now, id)
-    markDayFolderContentActivity(dayFolderId, now)
+    ).run(uploadGroupId, uploadRelativePath, now, id)
+    markUploadGroupContentActivity(uploadGroupId, now)
   }
 
   updateGroupVariables(id: string, variables: PathVariables): void {
@@ -386,10 +386,10 @@ export class TaskRepo {
     ).run(uploadRelativePath, new Date().toISOString(), id)
   }
 
-  listByDayFolder(dayFolderId: string): Task[] {
+  listByUploadGroup(uploadGroupId: string): Task[] {
     const rows = getDb().prepare(
       'SELECT * FROM tasks WHERE day_folder_id = ? ORDER BY created_at DESC'
-    ).all(dayFolderId) as Record<string, unknown>[]
+    ).all(uploadGroupId) as Record<string, unknown>[]
     return this.rowsToTasks(rows)
   }
 
@@ -674,7 +674,7 @@ export class TaskRepo {
         changed,
         options.replacePlannedObjectKeys ?? hasPlannedObjectKeys
       )
-      if (result.changed) markDayFolderContentActivity(task.dayFolderId, now)
+      if (result.changed) markUploadGroupContentActivity(task.uploadGroupId, now)
       return result
     } finally {
       db.prepare(`DROP TABLE IF EXISTS ${quotedTempTable}`).run()
@@ -719,7 +719,7 @@ export class TaskRepo {
         changed,
         options.replacePlannedObjectKeys ?? hasPlannedObjectKeys
       )
-      if (result.changed) markDayFolderContentActivity(task.dayFolderId, now)
+      if (result.changed) markUploadGroupContentActivity(task.uploadGroupId, now)
       return result
     } finally {
       db.prepare(`DROP TABLE IF EXISTS ${quotedTempTable}`).run()
@@ -974,7 +974,7 @@ export class TaskRepo {
         destinationRepo.updateStatus(
           taskId,
           destination.connectionId,
-          task.sourceType === 'local' && task.dayFolderId
+          task.sourceType === 'local' && task.uploadGroupId
             ? 'synced'
             : 'completed'
         )
@@ -994,7 +994,7 @@ export class TaskRepo {
       } else {
         this.updateStatus(
           taskId,
-          task.sourceType === 'local' && task.dayFolderId ? 'synced' : 'completed'
+          task.sourceType === 'local' && task.uploadGroupId ? 'synced' : 'completed'
         )
       }
     }
@@ -1102,7 +1102,7 @@ export class TaskRepo {
        FROM tasks
        WHERE id = ?`
     ).get(taskId) as { day_folder_id: string | null } | undefined
-    markDayFolderContentActivity(row?.day_folder_id, occurredAt)
+    markUploadGroupContentActivity(row?.day_folder_id, occurredAt)
   }
 
   markFileChanged(
@@ -1135,7 +1135,7 @@ export class TaskRepo {
       ).run(now, fileId)
     })
     transaction()
-    markDayFolderContentActivity(row?.day_folder_id, now)
+    markUploadGroupContentActivity(row?.day_folder_id, now)
   }
 
   scheduleRetry(fileId: string, errorMessage: string, nextRetryAt: string): number {
@@ -1214,8 +1214,8 @@ export class TaskRepo {
     return rows.map((row) => row.id)
   }
 
-  listPendingUploadTaskIdsByDayFolderIds(dayFolderIds: string[]): string[] {
-    const uniqueIds = Array.from(new Set(dayFolderIds)).filter(Boolean)
+  listPendingUploadTaskIdsByUploadGroupIds(uploadGroupIds: string[]): string[] {
+    const uniqueIds = Array.from(new Set(uploadGroupIds)).filter(Boolean)
     if (uniqueIds.length === 0) return []
     const folderPlaceholders = uniqueIds.map(() => '?').join(',')
     const statusPlaceholders = UPLOAD_QUEUE_CANDIDATE_STATUSES.map(() => '?').join(',')

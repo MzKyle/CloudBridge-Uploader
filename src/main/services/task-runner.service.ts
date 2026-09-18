@@ -3,7 +3,8 @@ import { basename, dirname, join } from 'path'
 import { BrowserWindow } from 'electron'
 import log from 'electron-log'
 import { IPC } from '@shared/ipc-channels'
-import { isDateFolderName, joinOssPath } from '@shared/day-folder'
+import { isDateFolderName } from '@shared/legacy-date-folder'
+import { joinOssPath } from '@shared/upload-path'
 import { getRuleSourceDirectories } from '@shared/scan-config'
 import { DEFAULT_SETTINGS } from '@shared/constants'
 import { renderPathMapping } from '@shared/path-mapping'
@@ -79,7 +80,7 @@ export class TaskRunnerService {
     const destinationRepo = getTaskDestinationRepo()
     const settings = getSettingsRepo().getAll()
     const stableChecks =
-      task.sourceType === 'local' && task.dayFolderId
+      task.sourceType === 'local' && task.uploadGroupId
         ? Math.max(2, settings.stability.checkCount || 2)
         : 1
 
@@ -609,7 +610,7 @@ export class TaskRunnerService {
   private updateDestinationFinalStates(task: Task): TaskStatus {
     const repo = getTaskDestinationRepo()
     let taskStatus: TaskStatus =
-      task.sourceType === 'local' && task.dayFolderId ? 'synced' : 'completed'
+      task.sourceType === 'local' && task.uploadGroupId ? 'synced' : 'completed'
 
     for (const destination of repo.listByTask(task.id)) {
       const summary = repo.summarizeFileTargets(task.id, destination.connectionId)
@@ -649,7 +650,7 @@ export class TaskRunnerService {
         if (taskStatus !== 'failed') taskStatus = 'retrying'
       } else {
         const status: TaskStatus =
-          task.sourceType === 'local' && task.dayFolderId
+          task.sourceType === 'local' && task.uploadGroupId
             ? 'synced'
             : 'completed'
         repo.updateStatus(
