@@ -118,6 +118,7 @@ export interface ConnectionTestResult {
 export interface UploadRuleDryRunInput {
   ruleId?: string
   rule?: UploadRule
+  sourceRoots?: string[]
   sourceRoot?: string
   sampleLimit?: number
 }
@@ -147,11 +148,9 @@ export interface UploadRuleDryRunGroupPreview {
   tasks: UploadRuleDryRunTaskPreview[]
 }
 
-export interface UploadRuleDryRunResult {
-  ok: boolean
-  ruleId: string
-  ruleName: string
+export interface UploadRuleDryRunRootPreview {
   sourceRoot: string
+  ok: boolean
   totals: {
     groups: number
     tasks: number
@@ -162,6 +161,23 @@ export interface UploadRuleDryRunResult {
   errors: string[]
   warnings: string[]
   groups: UploadRuleDryRunGroupPreview[]
+}
+
+export interface UploadRuleDryRunResult {
+  ok: boolean
+  ruleId: string
+  ruleName: string
+  totals: {
+    roots: number
+    groups: number
+    tasks: number
+    ignoredTasks: number
+    filesScanned: number
+    sampledFiles: number
+  }
+  errors: string[]
+  warnings: string[]
+  roots: UploadRuleDryRunRootPreview[]
 }
 
 export interface UploadPathPreview {

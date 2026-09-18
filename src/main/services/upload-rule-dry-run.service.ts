@@ -3,6 +3,7 @@ import { getSettingsRepo } from '../db/settings.repo'
 import { assertSafeCleanupPath } from '../utils/cleanup-path-safety'
 import { discoverUploadGroups } from './upload-group-discovery'
 import { FileFilterService, type ScannedFile } from './file-filter.service'
+import { compileDiscoveryPattern } from '@shared/discovery'
 import { renderPathMapping, validatePathMappingTemplate } from '@shared/path-mapping'
 import { getRuleById, resolveRuleDestinations } from '@shared/upload-rule'
 import type {
@@ -11,12 +12,21 @@ import type {
   UploadRuleDryRunFilePreview,
   UploadRuleDryRunGroupPreview,
   UploadRuleDryRunInput,
-  UploadRuleDryRunResult
+  UploadRuleDryRunResult,
+  UploadRuleDryRunRootPreview
 } from '@shared/types'
 
 interface ResolvedDestination {
   connectionId: string
   prefix: string
+}
+
+interface DryRunTotals {
+  groups: number
+  tasks: number
+  ignoredTasks: number
+  filesScanned: number
+  sampledFiles: number
 }
 
 const DEFAULT_SAMPLE_LIMIT = 50
@@ -40,187 +50,177 @@ export async function dryRunUploadRule(
 ): Promise<UploadRuleDryRunResult> {
   const settings = mergeRuleIntoSettings(baseSettings, input.rule)
   const rule = input.rule || getRuleById(settings, input.ruleId)
-  const sourceRoot = (
-    input.sourceRoot ||
-    rule.source.roots[0] ||
-    ''
-  ).trim()
+  const sourceRoots = resolveDryRunSourceRoots(input, rule)
   const errors: string[] = []
   const warnings: string[] = []
-  const groupPreviews: UploadRuleDryRunGroupPreview[] = []
+  const roots: UploadRuleDryRunRootPreview[] = []
+  const totals = emptyTotals()
   const sampleLimit = normalizeSampleLimit(input.sampleLimit)
-  let filesScanned = 0
-  let sampledFiles = 0
-  let taskCount = 0
-  let ignoredTaskCount = 0
 
-  if (!sourceRoot) {
+  if (sourceRoots.length === 0) {
     errors.push('Source Root 不能为空')
-    return buildResult(rule, sourceRoot, errors, warnings, groupPreviews, {
-      filesScanned,
-      sampledFiles,
-      taskCount,
-      ignoredTaskCount
-    })
-  }
-
-  try {
-    const rootStat = await stat(sourceRoot)
-    if (!rootStat.isDirectory()) {
-      errors.push(`Source Root 不是目录: ${sourceRoot}`)
-    }
-  } catch (error) {
-    errors.push(`Source Root 不存在或不可访问: ${sourceRoot} (${formatError(error)})`)
+    return buildResult(rule, roots, errors, warnings, totals)
   }
 
   const destinations = resolveDestinations(settings, rule, errors)
   validateFilterRegex(rule, errors)
+  validateDiscoveryConfig(rule, errors)
+  validateCompletionPolicy(rule, errors)
 
   if (errors.length > 0) {
-    return buildResult(rule, sourceRoot, errors, warnings, groupPreviews, {
-      filesScanned,
-      sampledFiles,
-      taskCount,
-      ignoredTaskCount
-    })
-  }
-
-  let groups
-  try {
-    groups = await discoverUploadGroups(sourceRoot, rule.discovery)
-  } catch (error) {
-    errors.push(`Discovery 规则无效: ${formatError(error)}`)
-    return buildResult(rule, sourceRoot, errors, warnings, groupPreviews, {
-      filesScanned,
-      sampledFiles,
-      taskCount,
-      ignoredTaskCount
-    })
-  }
-
-  if (groups.length === 0) {
-    errors.push('没有任何 Upload Group 匹配当前 Discovery 规则')
+    return buildResult(rule, roots, errors, warnings, totals)
   }
 
   const duplicateKeyOwners = new Map<string, string>()
-  const sourceRoots = rule.source.roots.length > 0 ? rule.source.roots : [sourceRoot]
 
-  for (const group of groups) {
-    const groupPreview: UploadRuleDryRunGroupPreview = {
-      groupKey: group.groupKey,
-      folderPath: group.folderPath,
-      variables: group.variables,
-      tasks: []
+  for (const sourceRoot of sourceRoots) {
+    const rootPreview = createRootPreview(sourceRoot)
+    roots.push(rootPreview)
+
+    const rootValid = await validateSourceRoot(rootPreview, errors)
+    if (!rootValid) continue
+
+    const groups = await discoverRootGroups(rootPreview, rule, errors)
+    if (!groups) continue
+    if (groups.length === 0) {
+      pushRootWarning(rootPreview, warnings, '没有任何 Upload Group 匹配当前 Discovery 规则')
+      continue
     }
 
-    for (const task of group.taskDirectories) {
-      if (task.ignored) {
-        ignoredTaskCount++
-        groupPreview.tasks.push({
-          taskKey: task.taskKey,
-          folderPath: task.folderPath,
-          variables: task.variables,
-          ignored: true,
-          filesScanned: 0,
-          sampleFiles: []
-        })
-        continue
+    rootPreview.totals.groups = groups.length
+    totals.groups += groups.length
+
+    for (const group of groups) {
+      const groupPreview: UploadRuleDryRunGroupPreview = {
+        groupKey: group.groupKey,
+        folderPath: group.folderPath,
+        variables: group.variables,
+        tasks: []
       }
 
-      taskCount++
-      if (rule.cleanup.enabled) {
-        try {
-          await assertSafeCleanupPath({
-            targetPath: task.folderPath,
-            sourceRoots
+      let matchedTasksInGroup = 0
+      for (const task of group.taskDirectories) {
+        if (task.ignored) {
+          rootPreview.totals.ignoredTasks++
+          totals.ignoredTasks++
+          groupPreview.tasks.push({
+            taskKey: task.taskKey,
+            folderPath: task.folderPath,
+            variables: task.variables,
+            ignored: true,
+            filesScanned: 0,
+            sampleFiles: []
           })
-        } catch (error) {
-          errors.push(
-            `清理路径不安全: ${task.folderPath} (${formatError(error)})`
-          )
+          continue
         }
-      }
 
-      const templateErrors = rule.pathMapping.mode === 'template'
-        ? validatePathMappingTemplate(rule.pathMapping.template || '', task.variables)
-        : []
-      for (const templateError of templateErrors) {
-        errors.push(`Path Mapping 无效: ${templateError}`)
-      }
+        matchedTasksInGroup++
+        rootPreview.totals.tasks++
+        totals.tasks++
 
-      const files = await sampleTaskFiles(task.folderPath, rule, sampleLimit)
-      filesScanned += files.length
-      sampledFiles += files.length
-      if (files.length === 0) {
-        warnings.push(`没有匹配文件: ${task.folderPath}`)
-      }
-
-      const filePreviews: UploadRuleDryRunFilePreview[] = []
-      for (const file of files) {
-        const objectKeys: UploadRuleDryRunFilePreview['objectKeys'] = []
-        for (const destination of destinations) {
+        if (rule.cleanup.enabled) {
           try {
-            const mappedPath = renderPathMapping(rule.pathMapping, {
-              sourcePath: task.folderPath,
-              relativePath: file.relativePath,
-              variables: task.variables
-            })
-            validateObjectPath(mappedPath)
-            const key = joinObjectPath(destination.prefix, mappedPath)
-            validateObjectPath(key)
-            const duplicateKey = `${destination.connectionId}\0${key}`
-            const existingOwner = duplicateKeyOwners.get(duplicateKey)
-            const owner = `${task.taskKey}/${file.relativePath}`
-            if (existingOwner && existingOwner !== owner) {
-              errors.push(
-                `对象 Key 冲突: ${destination.connectionId}:${key} ` +
-                `(${existingOwner} 与 ${owner})`
-              )
-            } else {
-              duplicateKeyOwners.set(duplicateKey, owner)
-            }
-            objectKeys.push({
-              connectionId: destination.connectionId,
-              key
+            await assertSafeCleanupPath({
+              targetPath: task.folderPath,
+              sourceRoots
             })
           } catch (error) {
-            errors.push(
-              `对象 Key 渲染失败: ${task.taskKey}/${file.relativePath} ` +
-              `(${formatError(error)})`
+            pushRootError(
+              rootPreview,
+              errors,
+              `清理路径不安全: ${task.folderPath} (${formatError(error)})`
             )
           }
         }
 
-        filePreviews.push({
-          relativePath: normalizeObjectPath(file.relativePath),
-          size: file.size,
-          objectKeys
+        const templateErrors = rule.pathMapping.mode === 'template'
+          ? validatePathMappingTemplate(rule.pathMapping.template || '', task.variables)
+          : []
+        for (const templateError of templateErrors) {
+          pushRootError(rootPreview, errors, `Path Mapping 无效: ${templateError}`)
+        }
+
+        const files = await sampleTaskFiles(task.folderPath, rule, sampleLimit)
+        rootPreview.totals.filesScanned += files.length
+        rootPreview.totals.sampledFiles += files.length
+        totals.filesScanned += files.length
+        totals.sampledFiles += files.length
+        if (files.length === 0) {
+          pushRootWarning(rootPreview, warnings, `没有匹配文件: ${task.folderPath}`)
+        }
+
+        const filePreviews: UploadRuleDryRunFilePreview[] = []
+        for (const file of files) {
+          const objectKeys: UploadRuleDryRunFilePreview['objectKeys'] = []
+          for (const destination of destinations) {
+            try {
+              const mappedPath = renderPathMapping(rule.pathMapping, {
+                sourcePath: task.folderPath,
+                relativePath: file.relativePath,
+                variables: task.variables
+              })
+              validateObjectPath(mappedPath)
+              const key = joinObjectPath(destination.prefix, mappedPath)
+              validateObjectPath(key)
+              const duplicateKey = `${destination.connectionId}\0${key}`
+              const existingOwner = duplicateKeyOwners.get(duplicateKey)
+              const owner = `${sourceRoot}:${task.taskKey}/${file.relativePath}`
+              if (existingOwner && existingOwner !== owner) {
+                pushRootError(
+                  rootPreview,
+                  errors,
+                  `对象 Key 冲突: ${destination.connectionId}:${key} ` +
+                    `(${existingOwner} 与 ${owner})`
+                )
+              } else {
+                duplicateKeyOwners.set(duplicateKey, owner)
+              }
+              objectKeys.push({
+                connectionId: destination.connectionId,
+                key
+              })
+            } catch (error) {
+              pushRootError(
+                rootPreview,
+                errors,
+                `对象 Key 渲染失败: ${task.taskKey}/${file.relativePath} ` +
+                  `(${formatError(error)})`
+              )
+            }
+          }
+
+          filePreviews.push({
+            relativePath: normalizeObjectPath(file.relativePath),
+            size: file.size,
+            objectKeys
+          })
+        }
+
+        groupPreview.tasks.push({
+          taskKey: task.taskKey,
+          folderPath: task.folderPath,
+          variables: task.variables,
+          ignored: false,
+          filesScanned: files.length,
+          sampleFiles: filePreviews
         })
       }
 
-      groupPreview.tasks.push({
-        taskKey: task.taskKey,
-        folderPath: task.folderPath,
-        variables: task.variables,
-        ignored: false,
-        filesScanned: files.length,
-        sampleFiles: filePreviews
-      })
+      if (matchedTasksInGroup === 0) {
+        pushRootWarning(rootPreview, warnings, `Upload Group 没有匹配 Upload Task: ${group.folderPath}`)
+      }
+      groupPreview.tasks.sort((a, b) => a.taskKey.localeCompare(b.taskKey))
+      rootPreview.groups.push(groupPreview)
     }
 
-    groupPreviews.push(groupPreview)
+    rootPreview.groups.sort((a, b) => a.groupKey.localeCompare(b.groupKey))
   }
 
-  if (taskCount === 0) {
+  if (totals.tasks === 0) {
     errors.push('没有任何 Upload Task 匹配当前 Discovery 规则')
   }
 
-  return buildResult(rule, sourceRoot, dedupe(errors), dedupe(warnings), groupPreviews, {
-    filesScanned,
-    sampledFiles,
-    taskCount,
-    ignoredTaskCount
-  })
+  return buildResult(rule, roots, errors, warnings, totals)
 }
 
 function mergeRuleIntoSettings(
@@ -236,6 +236,17 @@ function mergeRuleIntoSettings(
     rules,
     activeRuleId: rule.id
   }
+}
+
+function resolveDryRunSourceRoots(input: UploadRuleDryRunInput, rule: UploadRule): string[] {
+  const rawRoots = input.sourceRoots && input.sourceRoots.length > 0
+    ? input.sourceRoots
+    : input.sourceRoot
+      ? [input.sourceRoot]
+      : rule.source.roots
+  return Array.from(
+    new Set(rawRoots.map((root) => root.trim()).filter(Boolean))
+  )
 }
 
 function resolveDestinations(
@@ -262,6 +273,81 @@ function validateFilterRegex(rule: UploadRule, errors: string[]): void {
     } catch (error) {
       errors.push(`Filter Regex 无效: ${pattern} (${formatError(error)})`)
     }
+  }
+}
+
+function validateDiscoveryConfig(rule: UploadRule, errors: string[]): void {
+  const { discovery } = rule
+  for (const [label, pattern] of [
+    ['Group Pattern', discovery.groupPattern],
+    ['Task Pattern', discovery.taskPattern]
+  ] as const) {
+    if (!pattern?.trim()) continue
+    try {
+      compileDiscoveryPattern(pattern)
+    } catch (error) {
+      errors.push(`Discovery ${label} 无效: ${formatError(error)}`)
+    }
+  }
+
+  for (const [label, regex] of [
+    ['Group Regex', discovery.groupRegex],
+    ['Task Regex', discovery.taskRegex]
+  ] as const) {
+    if (!regex?.trim()) continue
+    try {
+      new RegExp(regex)
+    } catch (error) {
+      errors.push(`Discovery ${label} 无效: ${formatError(error)}`)
+    }
+  }
+}
+
+function validateCompletionPolicy(rule: UploadRule, errors: string[]): void {
+  if (rule.completion.mode === 'inactivity') {
+    if (!Number.isFinite(rule.completion.idleMinutes) || rule.completion.idleMinutes <= 0) {
+      errors.push('Completion inactivity idleMinutes 必须大于 0')
+    }
+  }
+  if (rule.completion.mode === 'marker-file') {
+    const markerFile = rule.completion.markerFile.trim()
+    if (!markerFile) errors.push('Completion marker-file markerFile 不能为空')
+    if (isAbsolutePath(markerFile)) {
+      errors.push('Completion marker-file markerFile 不能使用绝对路径')
+    }
+    if (pathSegments(markerFile).includes('..')) {
+      errors.push('Completion marker-file markerFile 不能包含 .. 路径段')
+    }
+  }
+}
+
+async function validateSourceRoot(
+  root: UploadRuleDryRunRootPreview,
+  errors: string[]
+): Promise<boolean> {
+  try {
+    const rootStat = await stat(root.sourceRoot)
+    if (!rootStat.isDirectory()) {
+      pushRootError(root, errors, 'Source Root 不是目录')
+      return false
+    }
+    return true
+  } catch (error) {
+    pushRootError(root, errors, `Source Root 不存在或不可访问 (${formatError(error)})`)
+    return false
+  }
+}
+
+async function discoverRootGroups(
+  root: UploadRuleDryRunRootPreview,
+  rule: UploadRule,
+  errors: string[]
+): Promise<Awaited<ReturnType<typeof discoverUploadGroups>> | null> {
+  try {
+    return await discoverUploadGroups(root.sourceRoot, rule.discovery)
+  } catch (error) {
+    pushRootError(root, errors, `Discovery 规则无效: ${formatError(error)}`)
+    return null
   }
 }
 
@@ -318,34 +404,74 @@ function normalizeSampleLimit(value: number | undefined): number {
   return Math.max(1, Math.min(MAX_SAMPLE_LIMIT, Math.floor(value || DEFAULT_SAMPLE_LIMIT)))
 }
 
+function createRootPreview(sourceRoot: string): UploadRuleDryRunRootPreview {
+  return {
+    sourceRoot,
+    ok: true,
+    totals: emptyTotals(),
+    errors: [],
+    warnings: [],
+    groups: []
+  }
+}
+
+function emptyTotals(): DryRunTotals {
+  return {
+    groups: 0,
+    tasks: 0,
+    ignoredTasks: 0,
+    filesScanned: 0,
+    sampledFiles: 0
+  }
+}
+
+function pushRootError(
+  root: UploadRuleDryRunRootPreview,
+  allErrors: string[],
+  message: string
+): void {
+  const scoped = `[${root.sourceRoot}] ${message}`
+  root.ok = false
+  root.errors.push(scoped)
+  allErrors.push(scoped)
+}
+
+function pushRootWarning(
+  root: UploadRuleDryRunRootPreview,
+  allWarnings: string[],
+  message: string
+): void {
+  const scoped = `[${root.sourceRoot}] ${message}`
+  root.warnings.push(scoped)
+  allWarnings.push(scoped)
+}
+
 function buildResult(
   rule: UploadRule,
-  sourceRoot: string,
+  roots: UploadRuleDryRunRootPreview[],
   errors: string[],
   warnings: string[],
-  groups: UploadRuleDryRunGroupPreview[],
-  totals: {
-    filesScanned: number
-    sampledFiles: number
-    taskCount: number
-    ignoredTaskCount: number
-  }
+  totals: DryRunTotals
 ): UploadRuleDryRunResult {
   return {
-    ok: errors.length === 0,
+    ok: errors.length === 0 && roots.every((root) => root.ok),
     ruleId: rule.id,
     ruleName: rule.name,
-    sourceRoot,
     totals: {
-      groups: groups.length,
-      tasks: totals.taskCount,
-      ignoredTasks: totals.ignoredTaskCount,
+      roots: roots.length,
+      groups: totals.groups,
+      tasks: totals.tasks,
+      ignoredTasks: totals.ignoredTasks,
       filesScanned: totals.filesScanned,
       sampledFiles: totals.sampledFiles
     },
     errors: dedupe(errors),
     warnings: dedupe(warnings),
-    groups
+    roots: roots.map((root) => ({
+      ...root,
+      errors: dedupe(root.errors),
+      warnings: dedupe(root.warnings)
+    }))
   }
 }
 
