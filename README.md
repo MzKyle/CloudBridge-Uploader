@@ -91,7 +91,7 @@ npm run build:win
 ```
 
 Build output is written to `dist/`. The current release candidate version is
-`3.0.0-rc.4`.
+`3.0.0-rc.5`.
 
 ## Packaging
 

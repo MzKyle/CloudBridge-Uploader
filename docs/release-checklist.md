@@ -1,6 +1,6 @@
 # Release Checklist
 
-Use this checklist for `3.0.0-rc.4` soak testing and the later `3.0.0` decision.
+Use this checklist for `3.0.0-rc.5` soak testing and the later `3.0.0` decision.
 
 ## Code Gate
 
