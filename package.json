@@ -18,7 +18,7 @@
     "rebuild:node": "npm rebuild better-sqlite3",
     "rebuild:electron": "electron-rebuild -f -w better-sqlite3 -v 33.4.11",
     "pretest": "npm run rebuild:node",
-    "test": "tsx --test tests/*.test.ts",
+    "test": "node scripts/run-tests.mjs",
     "posttest": "npm run rebuild:electron",
     "lint": "eslint .",
     "build:linux": "electron-vite build && rm -rf node_modules/cpu-features && npm run rebuild:electron && electron-builder --linux --x64 && npm run rebuild:node",
