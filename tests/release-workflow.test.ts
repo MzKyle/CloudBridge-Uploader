@@ -3,8 +3,12 @@ import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+function readText(path: string): string {
+  return readFileSync(path, 'utf8').replace(/\r\n/g, '\n')
+}
+
 test('release workflow is tag-triggered and gated by validation', () => {
-  const workflow = readFileSync('.github/workflows/release.yml', 'utf8')
+  const workflow = readText('.github/workflows/release.yml')
 
   assert.match(workflow, /tags:\n\s+- "v\*"/)
   assert.match(workflow, /permissions:\n\s+contents: read/)
@@ -22,7 +26,7 @@ test('release workflow is tag-triggered and gated by validation', () => {
 })
 
 test('release workflow builds native platform packages', () => {
-  const workflow = readFileSync('.github/workflows/release.yml', 'utf8')
+  const workflow = readText('.github/workflows/release.yml')
 
   assert.match(workflow, /runs-on: windows-latest[\s\S]*npm run build:win/)
   assert.match(workflow, /runs-on: ubuntu-latest[\s\S]*npm run build:linux/)

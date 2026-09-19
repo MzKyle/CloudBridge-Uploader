@@ -2,8 +2,12 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import test from 'node:test'
 
+function readText(path: string): string {
+  return readFileSync(path, 'utf8').replace(/\r\n/g, '\n')
+}
+
 test('packaging excludes only project source and keeps dependency src entrypoints', () => {
-  const config = readFileSync('electron-builder.yml', 'utf8')
+  const config = readText('electron-builder.yml')
 
   assert.ok(
     config.includes("- '!src/**'"),
@@ -16,7 +20,7 @@ test('packaging excludes only project source and keeps dependency src entrypoint
 })
 
 test('packaging keeps native modules unpacked for Electron runtime', () => {
-  const config = readFileSync('electron-builder.yml', 'utf8')
+  const config = readText('electron-builder.yml')
 
   assert.ok(
     config.includes('asarUnpack:\n  - node_modules/better-sqlite3/**/*'),
@@ -25,7 +29,7 @@ test('packaging keeps native modules unpacked for Electron runtime', () => {
 })
 
 test('packaging uses CloudBridge release asset names', () => {
-  const config = readFileSync('electron-builder.yml', 'utf8')
+  const config = readText('electron-builder.yml')
 
   assert.ok(
     config.includes('artifactName: CloudBridge-Uploader-${version}-windows-${arch}.${ext}'),
@@ -38,7 +42,7 @@ test('packaging uses CloudBridge release asset names', () => {
 })
 
 test('Windows icon path points to a real ICO file', () => {
-  const config = readFileSync('electron-builder.yml', 'utf8')
+  const config = readText('electron-builder.yml')
 
   assert.ok(config.includes('icon: resources/icon.ico'), 'Windows packaging should use the generated ICO icon')
   assert.ok(existsSync('resources/icon.ico'), 'Windows icon file should exist')
