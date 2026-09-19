@@ -1,36 +1,29 @@
 # 历史、存储与清理
 
-## 历史视图
+## Storage
 
-历史数据来自 `task_destinations` 与逻辑任务的关联查询。页面按阿里或腾讯提供方分页
-显示完成/失败记录，并支持只重试失败的当前云端。日期汇总单独来自 `day_folders`。
+SQLite 保存：
 
-逻辑任务已处于完成或失败时，删除单条云端历史会删除对应逻辑任务及其级联文件/目标
-记录；删除日期汇总只删除汇总记录。历史删除不会删除本地文件。
+- settings
+- upload groups
+- tasks
+- task files
+- task destinations
+- task file destinations
+- history
 
-## 设置
+## Cleanup
 
-设置以 section JSON 保存到 `settings` 表，包括 `profiles`、`activeProfileId`、
-`cloud`、`oss`、`tencentS3`、`scan`、`upload`、`filter`、`stability`、`cleanup`
-等。读取时与 `DEFAULT_SETTINGS` 合并并执行 Profile 归一化，使旧数据库获得新增
-默认字段和默认 Profile。
+CleanupService 只处理 safe candidate：
 
-## 自动清理
+1. refresh group files
+2. recalculate UploadGroup
+3. DB safety check
+4. cleanup claim
+5. claim 后再次 refresh/recalculate
+6. 文件系统未发现未登记内容
+7. path safety check
+8. remove directory
+9. mark cleaned
 
-清理服务启动 30 秒后执行一次，之后每小时执行，并可在任务完成或设置变化后重新
-调度。
-
-清理顺序：
-
-1. 查找已完成且超过保留天数的日期汇总，递归删除整个日期目录。
-2. 查找不属于日期汇总的已完成 `local` / `rsync` 任务并删除其目录。
-
-不会自动清理：
-
-- `manual` 来源任务。
-- 失败、暂停或未完成任务。
-- 双云中仍有一个目标未完成的任务。
-- 尚未超过保留天数的数据。
-
-`retentionDays=0` 表示完成后尽快清理；非法值回退为 7 天。启用前必须确认相关
-Profile 选定云端的归档结果可靠。
+若 claim 后发现新内容或未完成状态，cleanup 释放 claim 并保留目录。

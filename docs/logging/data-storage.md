@@ -1,89 +1,40 @@
 # 数据存储结构
 
-数据库位于 Electron `userData/uploader.db`，启用 WAL、5 秒 busy timeout 和外键。
+数据库位于 Electron `userData/uploader.db`，启用 WAL、busy timeout 和外键。
 
 ## 核心表
 
 | 表 | 内容 |
 | --- | --- |
-| `day_folders` | 日期路径、状态、子目录清单、文件/字节汇总和完成时间 |
-| `tasks` | 逻辑任务、上传模式、Profile 快照、日期汇总 ID、上传相对路径和来源 |
-| `task_files` | 逻辑文件、大小和聚合状态 |
-| `task_destinations` | 每个任务的阿里/腾讯状态、Prefix、路径模式、模板、进度和错误 |
-| `task_file_destinations` | 每个逻辑文件的逐云状态、对象 key、upload ID 和错误 |
-| `ssh_machines` | SSH、目录、传输模式、绑定 Profile 和最近同步时间 |
-| `settings` | 各设置 section 的 JSON |
+| `settings` | 配置 section JSON |
+| `day_folders` | UploadGroup 兼容表名，保存 group 状态和统计 |
+| `tasks` | UploadTask、规则快照、源路径、状态 |
+| `task_files` | 逻辑文件、size/mtime、stable count、retry 信息 |
+| `task_destinations` | 每个 task 的 connection 状态 |
+| `task_file_destinations` | 每个 file 的 connection 状态 |
 
-`tasks.oss_prefix`、`task_files.oss_key` 等旧字段为兼容保留。新逻辑以
-`task_destinations` 和 `task_file_destinations` 为准。
+`day_folders` 是历史表名；v3 文档和 UI 使用 UploadGroup 术语。
 
-## 数据库迁移
+## 兼容字段
+
+`provider`、`oss_prefix`、`profile_snapshot_json` 等字段保留用于迁移兼容或历史数据读取。新运行时
+以 UploadRule、CloudConnection、UploadGroup 和 `connectionId` 为主模型。
+
+## 启动恢复
 
 启动时会：
 
-- 为没有目标记录的旧任务创建阿里云目标。
-- 为未完成旧任务的文件创建阿里云文件目标。
-- 添加上传模式、日期汇总和上传相对路径字段。
-- 添加 Profile、目的地路径模式、对象 Key 模板和 SSH 机器 Profile 字段。
-- 从本地任务路径或 rsync 远程路径推导未完成任务的日期层路径。
-- 为旧远程机器补充 `transfer_mode`。
-
-已完成旧任务不会主动重传。
-
-## 标记文件
-
-### `tmp_upload.json`
-
-记录目录登记、来源、日期汇总、上传相对路径、上传模式、Profile 快照、两个 Prefix、
-路径模式和对象 Key 模板。
-
-### `process_task.json`
-
-```json
-{
-  "version": 1,
-  "taskId": "task-id",
-  "status": "failed",
-  "totalFiles": 2,
-  "uploadedFiles": 1,
-  "files": {
-    "a.txt": "completed",
-    "b.txt": "failed"
-  },
-  "uploadTargetMode": "both",
-  "destinations": {
-    "aliyun": {
-      "status": "completed",
-      "totalFiles": 2,
-      "uploadedFiles": 2,
-      "files": {
-        "a.txt": "completed",
-        "b.txt": "completed"
-      },
-      "error": null
-    },
-    "tencent": {
-      "status": "failed",
-      "totalFiles": 2,
-      "uploadedFiles": 1,
-      "files": {
-        "a.txt": "completed",
-        "b.txt": "failed"
-      },
-      "error": "upload failed"
-    }
-  },
-  "lastUpdated": "2026-06-18T10:10:00.000Z",
-  "error": "upload failed"
-}
-```
-
-### `day_upload.json`
-
-写在已跨天且完成的日期目录，包含日期汇总统计、所有子任务以及每个任务的逐云完成
-信息。旧日期补传完成后会按最新任务状态重建。
+- 恢复中断的 uploading task/file destination。
+- 保留 completed/synced/skipped 状态。
+- 对源目录已删除的未完成任务标记 skipped。
+- 保持 connectionId 唯一约束。
 
 ## 日志
 
-日志默认位于 `userData/logs`。排查时可搜索 `任务失败`、提供方名称、`rsync`、
-`SFTP`、`迁移` 和 `自动清理`。
+日志默认位于 `userData/logs`。排查时优先搜索：
+
+- `任务失败`
+- `上传队列`
+- `持续同步校准`
+- `自动清理`
+- `迁移`

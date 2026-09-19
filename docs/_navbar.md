@@ -2,7 +2,6 @@
 - [快速入门](guide/prerequisites.md)
 - [架构](architecture/README.md)
 - [模块](modules/README.md)
-- [代码](code/README.md)
 - [配置](configuration/settings.md)
 - [流程](workflow/local-upload.md)
 - [接口](interfaces/ipc.md)

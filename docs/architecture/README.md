@@ -1,16 +1,16 @@
 # 架构总览
 
-应用由 React 渲染进程、Preload 安全桥、Electron 主进程、SQLite 和两个对象存储
-适配器组成。渲染进程只通过 IPC 使用主进程能力，不直接访问文件系统、数据库或云端
+v3 由 React 渲染进程、Preload 安全桥、Electron 主进程、SQLite、本地文件扫描器和对象
+存储适配器组成。渲染进程只通过 IPC 使用主进程能力，不直接访问文件系统、数据库或云端
 SDK。
 
 ```mermaid
 graph TB
   subgraph Renderer["Renderer"]
-    Dashboard["Dashboard<br/>分云任务 / 日期汇总"]
-    Settings["Settings<br/>云端凭据 / 项目 Profile"]
-    History["History<br/>分云历史"]
-    Remote["SSHMachines"]
+    Dashboard["Dashboard<br/>UploadGroup / UploadTask"]
+    Rules["UploadRules<br/>rule editor / dry run"]
+    Connections["CloudConnections<br/>connection tests"]
+    History["History"]
   end
   subgraph Main["Main"]
     IPC["IPC Handlers"]
@@ -18,57 +18,46 @@ graph TB
     Queue["TaskQueueService"]
     Runner["TaskRunnerService"]
     Cloud["CloudUploadService"]
-    Ali["OSSUploadService"]
-    Tencent["TencentS3UploadService"]
-    SSH["SSHRsyncService"]
     Cleanup["CleanupService"]
   end
   subgraph Storage["Storage"]
     DB[("SQLite uploader.db")]
-    Marker["tmp_upload.json<br/>process_task.json<br/>day_upload.json"]
+    Local["Local source roots"]
     Aliyun["Aliyun OSS"]
-    Turbo["Tencent TurboS3"]
+    S3["S3-compatible storage"]
   end
 
   Renderer --> IPC
   IPC --> Scanner
   IPC --> Queue
-  IPC --> SSH
   IPC --> Cleanup
-  Queue --> Runner
-  Runner --> Cloud
-  Cloud --> Ali
-  Cloud --> Tencent
-  Ali --> Aliyun
-  Tencent --> Turbo
+  Scanner --> Local
   Scanner --> DB
+  Queue --> Runner
   Runner --> DB
-  Scanner --> Marker
-  Runner --> Marker
+  Runner --> Cloud
+  Cloud --> Aliyun
+  Cloud --> S3
+  Cleanup --> Local
+  Cleanup --> DB
 ```
 
 ## 核心边界
 
-- `ScannerService`：发现当天日期和工作次目录、稳定性检查、忽略目录登记、日期封账。
-- `TaskQueueService`：时间窗口和任务级并发。
-- `TaskRunnerService`：文件过滤、分云上传、恢复、重试和标记文件。
-- `CloudUploadService`：根据提供方选择阿里或腾讯上传适配器。
-- `TaskRepo`：逻辑任务和逻辑文件。
-- `TaskDestinationRepo`：分云任务、分云文件、进度和错误。
-- `DayFolderRepo`：日期汇总、子任务统计和 `day_upload.json` 数据。
-- `SSHRsyncService`：`rsync` 落盘任务与 SFTP 多云直传。
-- `CleanupService`：优先清理已封账日期目录，再处理符合条件的独立任务。
+- `ScannerService`：按启用的 UploadRule 扫描 Source Roots，发现 UploadGroup 和 UploadTask。
+- `TaskQueueService`：控制上传 gate、时间窗口、任务级并发和正常退出时的运行中任务中止。
+- `TaskRunnerService`：读取任务规则快照，执行过滤、路径映射、上传、重试和进度聚合。
+- `CloudUploadService`：按 CloudConnection 类型选择 Aliyun OSS 或 S3-compatible uploader。
+- `UploadGroupRepo`：保存 UploadGroup 状态、封账、cleanup claim 和清理安全查询。
+- `TaskRepo`：保存逻辑任务、逻辑文件和增量 reconcile 状态。
+- `TaskDestinationRepo`：按 `connectionId` 保存任务目标与文件目标状态。
+- `CleanupService`：只清理已封账并通过二次验证的本地目录。
 
 ## 持久化原则
 
-SQLite 是应用查询和恢复的主要状态源；数据目录内的三个 JSON 标记用于扫描去重、
-现场排查和跨应用恢复。任务创建时锁定所选 Profile 的快照、上传模式、过滤规则、
-Prefix、路径模式和对象 Key 模板，保证设置变更不会改变已存在任务的目标。
+SQLite 是恢复和查询的主状态源。任务创建时保存 UploadRule 快照，后续编辑规则只影响新任务。
+启动时会把中断留下的 `uploading` 任务和文件目标恢复为可重试状态，同时保留已经完成的
+destination/file destination。
 
-旧数据库启动时会自动：
-
-- 为旧逻辑任务创建阿里云 `task_destinations`。
-- 为未完成任务文件创建阿里云 `task_file_destinations`。
-- 补齐 `upload_target_mode`、`day_folder_id`、`upload_relative_path`、Profile 和路径模式字段。
-- 从本地或远程路径推导未完成任务的日期层上传路径。
-- 将源目录已删除的未完成任务标记为已跳过，避免启动恢复阻塞。
+清理是 fail-safe 流程：先 claim UploadGroup，再禁止 scanner 在该 group 上写入，随后重新
+refresh、recalculate、检查 DB 与文件系统内容，最后才执行删除。

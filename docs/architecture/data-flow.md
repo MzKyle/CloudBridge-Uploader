@@ -1,61 +1,21 @@
 # 数据流
 
-## 自动扫描与双云上传
+1. 用户创建 CloudConnection，并通过连接测试验证基础访问。
+2. 用户创建 UploadRule，配置 Source Roots、Discovery、Path Mapping、Destinations、Completion 和 Cleanup。
+3. Dry Run 对每个 Source Root 预览 group、task、sample files 和 object keys，不写入任务状态。
+4. Scanner 读取启用的 UploadRule，发现 UploadGroup 和 UploadTask。
+5. TaskRepo 持久化任务及规则快照，TaskDestinationRepo 按 `connectionId` 创建目标状态。
+6. Scanner 和 TaskRunner 通过 size/mtime reconcile 文件清单。
+7. TaskQueue 在 upload gate 打开且时间窗口允许时启动 runnable task。
+8. TaskRunner 只上传 pending 且稳定的 file destination。
+9. 每个连接独立更新状态、进度、错误和 retry 信息。
+10. UploadGroupService 根据子任务状态刷新 UploadGroup。
+11. Completion Policy 让 group 进入 sealed 后，CleanupService 才可能清理本地目录。
 
-```mermaid
-sequenceDiagram
-  participant UI as Dashboard
-  participant Scanner as ScannerService
-  participant DB as SQLite
-  participant Queue as TaskQueueService
-  participant Runner as TaskRunnerService
-  participant Ali as Aliyun
-  participant Tencent as Tencent
+## 关键不变式
 
-  UI->>Scanner: 触发扫描
-  Scanner->>Scanner: 按启用 Profile 发现当天日期/工作次目录并登记忽略目录
-  Scanner->>DB: 创建 day_folder、逻辑任务、Profile 快照和分云目标
-  Scanner->>Scanner: 写 tmp_upload.json
-  Queue->>DB: 获取 pending 任务
-  Queue->>Runner: 启动任务
-  Runner->>DB: 注册逻辑文件和分云文件目标
-  par 启用阿里云
-    Runner->>Ali: 上传未完成的阿里目标
-  and 启用腾讯云
-    Runner->>Tencent: 上传未完成的腾讯目标
-  end
-  Runner->>DB: 更新逐云和逻辑状态
-  Runner->>UI: 推送逐云进度与状态
-  Runner->>Runner: 写 process_task.json
-  Scanner->>DB: 汇总日期状态
-  Scanner->>Scanner: 跨天完成后写 day_upload.json
-```
-
-双云部分失败时，成功目标保持完成；重试只重置指定提供方的失败状态。
-
-## rsync 与 SFTP
-
-```mermaid
-flowchart LR
-  Remote["远程目录"] --> Rsync["rsync"]
-  Rsync --> Local["本地落地目录"]
-  Local --> Task["普通上传任务"]
-  Task --> Cloud["CloudUploadService"]
-
-  Remote --> SFTP["SFTP 读取 Buffer"]
-  SFTP --> Direct["按机器 Profile 直传云端"]
-```
-
-`rsync` 进入普通任务链路，拥有 SQLite 状态、标记文件和历史，并锁定机器绑定 Profile
-的快照。SFTP 返回逐云结果，但不创建普通任务历史。
-
-## 进度事件
-
-| 事件 | 内容 |
-| --- | --- |
-| `task:progress` | `taskId + provider`、文件数、字节数、速度和当前文件 |
-| `task:destination-change` | 指定云端的任务状态和错误 |
-| `task:status-change` | 逻辑任务状态变化 |
-| `day-folder:event` | 日期汇总状态和统计 |
-| `scanner:event` | 扫描状态和待稳定目录 |
-| `rsync:progress` / `sftp:progress` | 远程传输进度 |
+- 已创建任务使用自己的 UploadRule snapshot。
+- Destination identity 是 `connectionId`。
+- 已完成的 destination/file destination 不因其他连接失败而重传。
+- 源文件 size/mtime 变化会让文件回到 pending/stability 检查。
+- Cleanup 必须在 sealed/cleanable 且二次验证通过后执行。

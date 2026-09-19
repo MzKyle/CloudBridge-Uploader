@@ -1,55 +1,6 @@
-# 远程机器同步
+# Legacy / v2 Remote Sync
 
-## 添加远程机器
+Remote sync workflows using SSH, rsync, or SFTP are not part of the v3.0.0-rc.1 product
+surface. This page remains only to explain that older references are historical.
 
-在“远程机器”页填写名称、SSH 地址、用户名、认证方式、远程目录、本地目录、带宽
-限制、CPU Nice、传输模式和绑定 Profile。保存后先测试 SSH 连接。
-
-## rsync 拉取
-
-`rsync` 适合大量文件、大文件和不稳定网络：
-
-1. 从 `remoteDir` 拉取到 `localDir`。
-2. 使用 `--partial` 保留中断文件，并通过进度输出更新界面。
-3. 成功后创建 `sourceType=rsync` 的普通上传任务。
-4. 任务创建时锁定机器绑定 Profile 的目标云、过滤规则、Prefix 和路径规则。
-5. 任务进入普通队列，获得分云状态、重试、标记文件和历史记录。
-
-远程目录若包含日期层级，系统会尽量保留
-`YYYY-MM-DD/工作次目录` 作为云端上传相对路径。
-
-## SFTP 直传
-
-SFTP 适合文件较小且不希望本地落盘的场景：
-
-1. 递归列出 `remoteDir` 下的非隐藏文件。
-2. 将单个文件读入内存 Buffer。
-3. 按机器绑定 Profile 的目标云并行上传到所有启用云端。
-4. 为每个云端返回成功、对象 key 或错误。
-5. 全部云端成功后更新远程机器最后同步时间。
-
-SFTP 不创建普通任务、文件记录或历史记录。某个云端失败后，本次操作的总体结果为
-失败；重新触发时会重新处理远程文件。
-
-## 路径规则
-
-SFTP 和 rsync 都使用机器绑定 Profile 的 Prefix、路径模式和模板。非模板路径模式会
-基于远程目录或本地落盘目录推导日期、工作次和相对路径：
-
-```text
-{providerPrefix}/{profileResolvedPath}/{relativeFilePath}
-```
-
-若远程目录为 `/data/2026-06-18/04-39-04`，日期/工作次路径模式会保留该层级。
-模板模式支持 `{profile}`、`{date}`、`{workDir}`、`{relativePath}` 等变量；无法从远程
-路径推导的变量会在预览或执行结果中暴露为错误。
-
-## 停止与选型
-
-| 场景 | 推荐 |
-| --- | --- |
-| 大文件、海量文件、弱网、需要恢复和历史 | `rsync` |
-| 小文件、临时补传、不希望落盘 | SFTP |
-
-停止 `rsync` 会向子进程发送 `SIGTERM`；停止 SFTP 会关闭 SSH client。由于 SFTP
-会把单文件放入内存，超大文件应使用 `rsync`。
+For v3 RC validation, use [本地目录上传](local-upload.md) and [测试验收流程](testing.md).

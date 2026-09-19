@@ -1,53 +1,30 @@
 # 任务队列与上传执行
 
-## 队列与并发
+## Queue
 
-`TaskQueueService` 每 2 秒检查已稳定且到达重试时间的文件任务，并同时判断时间窗口。
-
-| 配置 | 默认值 | 作用 |
-| --- | --- | --- |
-| `maxConcurrentTasks` | `4` | 同时运行的逻辑任务 |
-| `maxFilesPerTask` | `12` | 单任务内文件作业数 |
-| `maxConcurrentUploads` | `12` | 所有任务和云端共享的上传信号量 |
-
-双云文件会产生两个提供方作业，但仍受全局上传信号量限制。超过分片阈值的大文件会占用多个信号量 slot，避免多个 multipart 上传同时放大连接数。
-
-## 执行流程
-
-1. 读取任务创建时锁定的 Profile 快照、目标模式、Prefix、路径模式和模板。
-2. 校验所有目标提供方配置并创建任务级 uploader。
-3. 从持久化文件队列读取稳定且到期的文件目标。
-4. 读取每个目标的 `pending / uploading / retrying / failed` 状态。
-5. 非模板模式构建 `{prefix}/{uploadRelativePath}/{relativePath}`；模板模式渲染模板后再追加 Prefix。
-6. 并发上传并分别更新云端进度、文件状态和错误。
-7. 聚合逻辑文件、逻辑任务和日期汇总状态。
-8. 状态切换时写入紧凑的 `process_task.json` 汇总；逐文件详情保存在 SQLite。
-
-上传前会按云端检查待上传文件的对象 Key。若两个不同文件渲染出同一个对象 Key，任务会
-失败并报告重复 Key，避免后上传文件静默覆盖先上传文件。
-
-## 恢复与重试
-
-- 已完成的分云文件目标不会重传。
-- 应用崩溃或暂停留下的 `uploading` 会作为未完成状态恢复。
-- 瞬时错误按 `1/2/5/15/30` 秒并附加随机抖动自动重试。
-- 指定 `provider` 重试时只重置该云端；未指定时按兼容逻辑处理任务失败目标。
-
-可重试错误包括 `429`、`5xx`、连接重置、超时、DNS 临时失败和管道中断。
-
-## 过滤与标记文件
-
-过滤顺序：
+`TaskQueueService` 控制上传 gate、时间窗口和任务并发。正常退出时会：
 
 ```text
-白名单 > 黑名单 > 正则排除 > 后缀匹配
+close upload gate
+-> abort running task controllers
+-> mark incomplete task/destination recoverable
+-> stop timers
 ```
 
-隐藏目录以及 `tmp_upload.json`、`process_task.json`、`day_upload.json` 不参与上传。
+已经完成的 destination 不会被重置。
 
-新任务使用创建时保存的 Profile 过滤规则；旧任务没有 Profile 快照时回退全局过滤规则。
+## Runner
 
-## 暂停和取消
+`TaskRunnerService` 使用任务创建时保存的 UploadRule snapshot：
 
-运行中 uploader 使用独立取消控制。暂停会中止当前任务并保留未完成目标以便恢复；
-跳过会中止当前任务并记录原因。一个任务的操作不会主动中止其他任务的 client。
+- filter
+- pathMapping
+- destinations
+- completion/cleanup policy references
+
+Runner 只上传 pending 且稳定的 file destination。每个目标连接独立计数、报错和重试。
+
+## Source Mutation
+
+上传前和上传后都会检查源文件 size/mtime。若文件在上传期间变化，当前文件会被重新排队，
+下一轮上传最新稳定版本。

@@ -1,125 +1,22 @@
 # 目录扫描器
 
-## 职责
+`ScannerService` 读取启用的 UploadRule，并按每条规则的 Source Roots 和 Discovery 配置发现
+UploadGroup 与 UploadTask。
 
-`ScannerService` 把启用 Profile 的监控目录转换为日期汇总和工作次上传任务：
+## 行为
 
-- 启动后只自动扫描当天有效的 `YYYY-MM-DD` 日期目录。
-- 旧日期目录只保留已有数据库状态，不自动发现新任务。
-- 当天日期目录中匹配 `workDirNamePattern` 的直接非隐藏子目录作为工作次任务。
-- 不匹配的直接子目录登记为“已忽略目录”，状态为 `skipped`，原因是 `非工作次目录`。
-- 日期目录根部文件不会上传。
-- 新文件在大小和修改时间连续稳定后进入上传队列。
-- 已存在标记或数据库任务时执行恢复与关联检查，不重复创建任务。
-- 跨天且所有已发现任务完成或跳过后写入 `day_upload.json`。
-- 已忽略目录可通过“恢复监控”转为普通上传任务，并绕过工作次正则。
+- watcher 监听目录结构变化。
+- 周期扫描作为兜底。
+- 文件内容变化由稳定性检查和 reconcile 处理。
+- cleanable/cleaned UploadGroup 不允许 scanner 创建新 task 或修改 group 状态。
 
-手动添加目录不受日期和工作次正则限制，用于旧日期补传或临时目录上传。
+## Reconcile
 
-## 启动与扫描范围
+Scanner 会把当前文件清单与 SQLite 中的 task files 对比：
 
-扫描器启动后延迟进入后台工作，避免阻塞 Electron 窗口显示。自动扫描读取每个启用
-Profile 的云端监控目录，并按 Profile 的目标云过滤提供方。每个目录只读取：
+- 新文件插入 pending。
+- size/mtime 未变时增加 stable count。
+- size/mtime 变化时回到 pending。
+- 缺失文件标记 missing/skipped。
 
-```text
-{dataRoot}/{today}
-```
-
-其中 `today` 使用本机当前日期，例如 `2026-06-24`。旧日期中的新目录不会自动注册。
-如果旧日期已有未完成任务，启动恢复会按队列限流逐个续传；源目录已删除的未完成任务
-会自动标记为“已跳过（源目录已删除）”。保存 Profile 或默认 Profile 后会重启 watcher，
-使扫描范围变化立即生效。
-
-目录枚举、文件枚举和任务校准都采用异步分批执行，避免同步递归扫描大目录导致主进程
-卡死。
-
-## 工作次识别
-
-默认工作次目录名正则：
-
-```text
-^\d{2}-\d{2}-\d{2}$
-```
-
-匹配示例：
-
-```text
-04-39-04
-20-46-05
-```
-
-不匹配示例：
-
-```text
-teach
-calibration
-tmp
-```
-
-不匹配目录会出现在界面中，显示为“已忽略目录”，不会进入上传队列。点击“恢复监控”
-后，该目录转为可上传任务。
-
-## 文件稳定性检查
-
-上传前按文件记录：
-
-```text
-relativePath -> size + mtimeMs
-```
-
-文件大小和修改时间连续两次稳定后入队。上传结束后会再次检查源文件，如果上传期间
-文件变化，会重新排队覆盖同一云端对象 Key。
-
-默认值为 5 秒检查一次、连续 2 次稳定，即通常至少等待约 10 秒。
-
-## 任务注册
-
-`tmp_upload.json` 示例：
-
-```json
-{
-  "version": 2,
-  "createdAt": "2026-06-18T10:00:00.000Z",
-  "folderPath": "/data/upload-root/2026-06-18/04-39-04",
-  "metadata": {
-    "source": "local",
-    "dayFolderId": "day-folder-id",
-    "date": "2026-06-18",
-    "uploadRelativePath": "2026-06-18/04-39-04",
-    "uploadTargetMode": "both",
-    "profileId": "default",
-    "profileName": "默认项目",
-    "destinationPrefixes": {
-      "aliyun": "ali-upload/",
-      "tencent": "tencent-upload/"
-    },
-    "destinationPathModes": {
-      "aliyun": "date-workdir",
-      "tencent": "template"
-    },
-    "destinationObjectKeyTemplates": {
-      "tencent": "{profile}/{date}/{workDir}/{relativePath}"
-    }
-  }
-}
-```
-
-任务会保存：
-
-- 日期汇总 ID 和 `日期/工作次目录` 上传相对路径。
-- 创建时的 Profile ID、Profile 名称和 Profile 快照。
-- 创建时的上传模式、阿里和腾讯各自的 Prefix、路径模式和对象 Key 模板。
-- `local`、`rsync` 或 `manual` 来源信息。
-
-## 日期汇总状态
-
-| 状态 | 含义 |
-| --- | --- |
-| `collecting` | 当天仍可能产生数据，或尚无工作次任务 |
-| `processing` | 存在待稳定、排队或上传中的任务 |
-| `blocked` | 至少一个任务失败或暂停 |
-| `completed` | 日期已跨天且全部已发现任务完成 |
-| `completed_with_skips` | 日期已跨天且所有任务完成或跳过，但存在跳过或忽略项 |
-
-空日期目录不会写入 `day_upload.json`。升级前已完成的数据库任务或
-`process_task.json` 会被信任，不主动重传。
+`synced` 的本地任务仍会被持续 reconcile，因此晚到或修改的文件不会永久停留在 completed。

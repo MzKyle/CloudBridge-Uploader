@@ -1,55 +1,52 @@
 # 状态模型
 
-## 逻辑任务与云端目标
-
-逻辑任务和每个云端目标都使用：
+## UploadTask
 
 ```text
-pending / scanning / uploading / completed / failed / paused
+pending -> uploading -> completed
+pending -> scanning -> pending
+uploading -> retrying -> pending
+uploading -> failed
+uploading -> paused
+any unfinished -> skipped
 ```
 
-逻辑状态由选定云端状态聚合：
+本地自动发现的任务在全部连接同步后可表现为 `synced`。启动恢复会把未完成的
+`uploading/scanning/retrying/failed/paused` 任务恢复为可执行状态，不会改写已经
+`completed/synced/skipped` 的任务。
 
-- 所有目标完成：`completed`
-- 任一目标失败：`failed`
-- 否则按暂停、上传、扫描、等待的优先级聚合
-
-双云部分失败后，成功目标保持 `completed`，失败目标保持 `failed`。从阿里或腾讯
-标签页重试时，`task:retry` 携带 `provider`，只重置对应目标。
-
-## 文件状态
-
-逻辑文件和 `task_file_destinations` 使用：
+## File Destination
 
 ```text
-pending / uploading / completed / failed
+pending -> uploading -> completed
+pending -> uploading -> failed
+uploading -> pending
+pending -> skipped
 ```
 
-逻辑文件必须在所有选定云端完成后才是 `completed`。对象 key、分片 upload ID 和
-错误保存在分云文件目标中；旧 `task_files.oss_key` 等字段为兼容保留。
+`uploading -> pending` 用于进程中断、正常 shutdown 中止和源文件变化后的恢复。逻辑文件状态
+由同一个 task file 下所有 connection 的 file destination 聚合得到。
 
-## 日期汇总
+## UploadGroup
 
-| 状态 | 含义 |
-| --- | --- |
-| `collecting` | 当天仍可能产生数据，或没有工作次任务 |
-| `processing` | 存在待稳定、排队或上传中的任务 |
-| `blocked` | 至少一个任务失败或暂停 |
-| `completed` | 日期已跨天且全部已发现任务完成 |
-| `completed_with_skips` | 日期已跨天且全部已发现任务完成或跳过 |
+```text
+open -> closing -> sealed -> cleanable -> cleaned
+open/closing -> error
+error -> open/closing
+cleanable -> sealed
+```
 
-旧日期不会自动发现新增目录；需要补传时手动添加具体工作次目录，补传完成后日期汇总
-重新计算，必要时重写 `day_upload.json`。
+`cleanable` 是 cleanup claim。claim 期间 scanner 不再修改该 UploadGroup。若 claim 后重新
+验证发现新任务、未完成目标、源文件变化或未登记内容，cleanup 会释放 claim 回到 `sealed`。
 
-## 标记文件
+## Completion
 
-| 文件 | 位置 | 作用 |
-| --- | --- | --- |
-| `tmp_upload.json` | 工作次目录 | 扫描登记、Profile 快照、任务模式、Prefix、路径规则和来源 |
-| `process_task.json` | 工作次目录 | 逻辑状态与逐云文件状态 |
-| `day_upload.json` | 日期目录 | 跨天完成汇总、子任务和逐云完成信息 |
+当前支持的 Completion Policy：
 
-## 时间窗口
+- `rollover`
+- `manual`
+- `marker-file`
+- `inactivity`
+- `none`
 
-时间窗口只限制新 `pending` 任务启动，不中断运行中任务。开始时间晚于结束时间时按
-跨午夜窗口处理；两者都关闭时全天允许启动。
+策略只控制 group 何时封账；是否删除本地数据仍由 Cleanup Policy 和 cleanup safety gate 决定。

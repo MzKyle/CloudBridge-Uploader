@@ -1,63 +1,29 @@
 # 本地目录上传
 
-## 目录约定
+## 建规则
 
-在项目 Profile 中添加日期目录的父级扫描目录：
+1. 创建 CloudConnection。
+2. 创建 UploadRule。
+3. 添加 Source Roots。
+4. 配置 Discovery，决定如何把目录识别为 UploadGroup 和 UploadTask。
+5. 配置 Filter。
+6. 配置 Path Mapping。
+7. 选择 Destination Connections。
+8. 运行 Dry Run 并确认 object keys。
 
-```text
-/data/upload-root/
-  2026-06-18/
-    04-39-04/
-      camera1/0001.jpg
-      metadata.json
-```
-
-启动后自动扫描只处理当天日期目录。扫描器只把匹配工作次正则的直接子目录作为任务，
-默认识别 `04-39-04` 这样的 `HH-MM-SS` 名称，并持续检测内部增量。新增或修改文件
-在大小和修改时间连续稳定后上传；修改已有文件会覆盖云端同一对象 Key。
-
-旧日期目录不会自动发现新工作次。需要补传旧数据时，使用“手动添加目录”选择具体
-工作次目录。
-
-## 操作步骤
-
-1. 配置并测试所有启用的云端凭据。
-2. 新建或编辑项目 Profile，选择仅阿里、仅腾讯或双云上传。
-3. 在 Profile 中添加 `/data/upload-root` 这类扫描目录。
-4. 配置 Profile 的文件后缀过滤、每个云端 Prefix 和路径模式。
-5. 配置稳定性检查、并发和时间窗口。
-6. 触发扫描或等待自动扫描；自动扫描只处理当天日期目录。
-7. 观察日期汇总和当前云端标签页中的任务进度。
-8. 失败时在对应云端视图中执行“重试此云端”。
-
-## 对象路径
-
-每个 Profile 可以为每个云端使用自己的 Prefix、路径模式或对象 Key 模板。日期/工作次
-路径模式下的对象路径示例：
+## 上传流程
 
 ```text
-{providerPrefix}/2026-06-18/04-39-04/camera1/0001.jpg
-{providerPrefix}/2026-06-18/04-39-04/metadata.json
+Scanner discovers UploadGroup/UploadTask
+-> files become stable
+-> TaskQueue starts runnable task
+-> TaskRunner uploads pending file destinations
+-> per-connection state is persisted
+-> UploadGroup refreshes
+-> sealed group can be cleaned
 ```
 
-任务创建后会保存 Profile 快照。后续修改 Prefix、过滤规则、路径模式或模板，都不会
-改变该任务的目标路径。
+## 文件变化
 
-## 完成与封账
-
-- 单云任务：选定云端当前文件全部完成后显示“已同步，持续监控”。
-- 双云任务：阿里和腾讯都同步后逻辑任务才显示已同步。
-- 日期目录：跨天且全部任务已同步或已跳过后写入 `day_upload.json`。
-- 旧日期补传：手动添加具体工作次目录并选择 Profile，完成后日期汇总重新计算。
-- 自动清理：只有逻辑完成并满足保留天数后才会删除本地数据。
-
-## 任务控制
-
-| 操作 | 行为 |
-| --- | --- |
-| 暂停 | 中止运行中上传，未完成文件保留为可恢复状态 |
-| 恢复 | 将任务重新排队 |
-| 跳过 | 中止上传并归档为已跳过，不再阻塞日期封账 |
-| 恢复监控 | 重新扫描已跳过但仍存在的源目录 |
-| 恢复已忽略目录 | 将 `teach` 等非工作次目录转为普通上传任务 |
-| 重试此云端 | 仅重置指定失败目标，成功云端不会重传 |
+上传前和上传后都会检查 size/mtime。若源文件在上传期间变化，当前 file destination 会回到
+pending，等待下一轮稳定检查后重新上传最新版本。

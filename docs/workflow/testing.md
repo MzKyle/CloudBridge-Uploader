@@ -1,77 +1,29 @@
 # 测试验收流程
 
-## 基础环境
+## Code Gate
 
-- [ ] 使用 Node.js 18+，建议 20 LTS
-- [ ] `npm test` 通过
-- [ ] `npm run typecheck` 通过
-- [ ] 应用启动且设置自动保存正常
-- [ ] 所有启用云端连接测试成功
-- [ ] 至少一个启用的项目 Profile 已配置扫描目录、目标云、过滤规则和路径模式
+- [ ] `npm run typecheck`
+- [ ] `npm run lint`
+- [ ] `npm test`
+- [ ] `npm run build`
 
-## 本地日期目录
+## Reliability Smoke
 
-```bash
-mkdir -p /tmp/upload_test/2026-06-29/04-39-04
-echo "hello" > /tmp/upload_test/2026-06-29/04-39-04/a.txt
-echo '{"ok":true}' > /tmp/upload_test/2026-06-29/04-39-04/meta.json
-```
+- [ ] interrupted upload startup recovery
+- [ ] completed destination 不重传
+- [ ] failed destination retry isolation
+- [ ] mid-upload source mutation 重新上传最新稳定版本
+- [ ] UploadRule snapshot 不被后续规则编辑影响
+- [ ] sealed UploadGroup cleanup safety
+- [ ] cleanup race abort
 
-将 `/tmp/upload_test` 添加到启用 Profile 的扫描目录并触发扫描。
+## Product Smoke
 
-- [ ] 工作次目录稳定后出现 `tmp_upload.json`
-- [ ] 日期汇总显示一个子任务
-- [ ] 当前云端标签显示任务和逐云进度
-- [ ] 对象路径与 Profile 的 Prefix、路径模式或模板预览一致
-- [ ] 任务目录出现含逐云状态的 `process_task.json`
-- [ ] 修改 Profile 后，已创建任务仍使用创建时保存的 Profile 快照
-
-自动扫描只处理测试当天的日期目录。测试跨天封账时，可使用系统日期切换、手动添加旧日期
-工作次，或准备已有数据库任务后再验证封账：
-
-- [ ] 全部任务完成后日期目录出现 `day_upload.json`
-- [ ] 旧日期新目录不会被自动注册，手动添加具体工作次后可以补传
-- [ ] 补传完成后重新生成 `day_upload.json`
-- [ ] 当天 `teach` 目录显示为“已忽略目录”，不会进入上传队列
-- [ ] 已忽略目录点击“恢复监控”后可以上传
-
-## 双云与恢复
-
-- [ ] 仅阿里和仅腾讯模式分别可完成
-- [ ] 双云模式必须两端都完成才显示逻辑完成
-- [ ] 不同 Profile 的扫描目录、目标云和过滤规则不会串用
-- [ ] 人为使一个云端失败，另一个云端保持成功
-- [ ] “重试此云端”只补传失败端
-- [ ] 暂停、恢复、取消和时间窗口行为符合预期
-- [ ] 已完成分云文件不会重复上传
-
-## 远程
-
-- [ ] rsync 拉取后按机器绑定 Profile 创建普通任务并保留日期层路径
-- [ ] SFTP 按机器绑定 Profile 返回每个云端结果
-- [ ] SFTP 不创建普通任务历史
-
-## 清理与迁移
-
-- [ ] 双云部分完成不会触发清理
-- [ ] 已封账日期超过保留期后删除整个日期目录
-- [ ] 手动任务不会自动清理
-- [ ] 旧数据库启动后生成阿里云目标且不重传已完成任务
-
-## 记录模板
-
-```text
-测试时间：
-应用版本：2.2.0
-Node.js：
-Profile：
-Profile 目标云：
-阿里 Bucket：
-腾讯 Bucket：
-日期目录：
-基础上传：
-双云恢复：
-远程同步：
-封账与清理：
-异常与日志：
-```
+- [ ] create Aliyun OSS connection
+- [ ] create S3-compatible connection
+- [ ] create UploadRule
+- [ ] multi-root Dry Run
+- [ ] upload sample data
+- [ ] restart recovery
+- [ ] History result visible
+- [ ] cleanup safety checked
