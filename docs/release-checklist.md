@@ -11,7 +11,7 @@ Use this checklist for `3.0.0-rc.5` soak testing and the later `3.0.0` decision.
 
 ## Packaging
 
-- [ ] Windows native package via release workflow
+- [x] Windows native package via release workflow
 - [ ] Windows installer install
 - [ ] Windows app launch
 - [x] Linux native package assets generated
@@ -33,7 +33,7 @@ Use this checklist for `3.0.0-rc.5` soak testing and the later `3.0.0` decision.
 
 ## Release Hygiene
 
-- [ ] logs checked
+- [x] logs checked
 - [x] README version correct
 - [x] package version correct
 - [x] no real credentials in repository
@@ -46,6 +46,6 @@ Use this checklist for `3.0.0-rc.5` soak testing and the later `3.0.0` decision.
 - [x] package-lock version gate added
 - [x] SHA256SUMS excludes itself and includes release assets only
 - [x] `better-sqlite3` remains unpacked from `app.asar`
-- [ ] RC GitHub pre-release created by tag workflow
+- [x] RC GitHub pre-release created by tag workflow
 - [ ] Final Release Acceptance PASS
 - [ ] Stable `v3.0.0` promotion
