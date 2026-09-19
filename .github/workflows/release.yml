@@ -1,0 +1,245 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release_version.outputs.version }}
+      prerelease: ${{ steps.release_version.outputs.prerelease }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Validate tag and package versions
+        id: release_version
+        run: node scripts/validate-release-tag.mjs "${GITHUB_REF_NAME}"
+
+  package-windows:
+    name: package windows
+    runs-on: windows-latest
+    needs: validate
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows installer
+        run: npm run build:win
+
+      - name: Verify Windows release asset
+        shell: pwsh
+        run: |
+          $version = "${{ needs.validate.outputs.version }}"
+          $asset = "dist/CloudBridge-Uploader-$version-windows-x64.exe"
+          if (!(Test-Path $asset)) {
+            Get-ChildItem -Path dist -Recurse | Select-Object FullName
+            throw "Missing Windows NSIS installer: $asset"
+          }
+          if ((Get-Item $asset).Length -le 0) {
+            throw "Windows installer is empty: $asset"
+          }
+          $nativeModules = Get-ChildItem -Path dist -Recurse -Filter better_sqlite3.node |
+            Where-Object { $_.FullName -like "*app.asar.unpacked*better-sqlite3*" }
+          if (!$nativeModules) {
+            throw "better-sqlite3 native module was not found under app.asar.unpacked"
+          }
+
+      - name: Upload Windows release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/CloudBridge-Uploader-${{ needs.validate.outputs.version }}-windows-x64.exe
+          if-no-files-found: error
+
+  package-linux:
+    name: package linux
+    runs-on: ubuntu-latest
+    needs: validate
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Linux packages
+        run: npm run build:linux
+
+      - name: Verify Linux release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          version="${{ needs.validate.outputs.version }}"
+          appimages=(dist/CloudBridge-Uploader-"${version}"-linux-*.AppImage)
+          debs=(dist/CloudBridge-Uploader-"${version}"-linux-*.deb)
+
+          if [[ ${#appimages[@]} -ne 1 ]]; then
+            find dist -maxdepth 2 -type f -print
+            echo "Expected exactly one Linux AppImage asset, found ${#appimages[@]}" >&2
+            exit 1
+          fi
+
+          if [[ ${#debs[@]} -ne 1 ]]; then
+            find dist -maxdepth 2 -type f -print
+            echo "Expected exactly one Linux deb asset, found ${#debs[@]}" >&2
+            exit 1
+          fi
+
+          for asset in "${appimages[@]}" "${debs[@]}"; do
+            if [[ ! -s "$asset" ]]; then
+              echo "Release asset is empty: $asset" >&2
+              exit 1
+            fi
+          done
+
+          native_count=$(find dist -path '*app.asar.unpacked*better-sqlite3*better_sqlite3.node' -type f | wc -l)
+          if [[ "$native_count" -eq 0 ]]; then
+            echo "better-sqlite3 native module was not found under app.asar.unpacked" >&2
+            exit 1
+          fi
+
+      - name: Upload Linux release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: |
+            dist/CloudBridge-Uploader-${{ needs.validate.outputs.version }}-linux-*.AppImage
+            dist/CloudBridge-Uploader-${{ needs.validate.outputs.version }}-linux-*.deb
+          if-no-files-found: error
+
+  release:
+    name: create release
+    runs-on: ubuntu-latest
+    needs:
+      - validate
+      - package-windows
+      - package-linux
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Collect and checksum release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          version="${{ needs.validate.outputs.version }}"
+          mkdir -p release
+
+          windows="release-assets/CloudBridge-Uploader-${version}-windows-x64.exe"
+          appimages=(release-assets/CloudBridge-Uploader-"${version}"-linux-*.AppImage)
+          debs=(release-assets/CloudBridge-Uploader-"${version}"-linux-*.deb)
+
+          if [[ ! -s "$windows" ]]; then
+            find release-assets -type f -print
+            echo "Missing Windows release asset: $windows" >&2
+            exit 1
+          fi
+
+          if [[ ${#appimages[@]} -ne 1 || ${#debs[@]} -ne 1 ]]; then
+            find release-assets -type f -print
+            echo "Missing Linux release asset. AppImage=${#appimages[@]} deb=${#debs[@]}" >&2
+            exit 1
+          fi
+
+          cp "$windows" release/
+          cp "${appimages[0]}" release/
+          cp "${debs[0]}" release/
+
+          (
+            cd release
+            LC_ALL=C find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%f\n' | sort | xargs sha256sum > SHA256SUMS.txt
+          )
+
+          cat release/SHA256SUMS.txt
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          cat > RELEASE_NOTES.md <<'NOTES'
+          CloudBridge Uploader
+
+          Windows / Linux desktop uploader.
+
+          Downloads:
+          - Windows x64: .exe
+          - Linux x64: AppImage
+          - Linux x64: .deb
+
+          See README for configuration and upgrade notes.
+          NOTES
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_args=(
+            "${GITHUB_REF_NAME}"
+            release/*
+            --repo "${GITHUB_REPOSITORY}"
+            --title "CloudBridge Uploader ${GITHUB_REF_NAME}"
+            --notes-file RELEASE_NOTES.md
+          )
+
+          if [[ "$PRERELEASE" == "true" ]]; then
+            release_args+=(--prerelease)
+          fi
+
+          gh release create "${release_args[@]}"
