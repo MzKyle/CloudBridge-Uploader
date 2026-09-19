@@ -129,3 +129,66 @@ test('pause-running stop marks active uploads paused', async () => {
     closeTestDb(db)
   }
 })
+
+test('shutdown closes upload gate and preserves completed destinations', async () => {
+  const db = openTestDb()
+  try {
+    const repo = new TaskRepo()
+    const destinationRepo = getTaskDestinationRepo()
+    const task = repo.create({
+      folderPath: '/tmp/shutdown-running',
+      folderName: 'shutdown-running',
+      sourceType: 'manual',
+      destinations: [
+        {
+          connectionId: 'archive-a',
+          connectionName: 'Archive A',
+          connectionType: 's3',
+          uploadRelativePath: ''
+        },
+        {
+          connectionId: 'archive-b',
+          connectionName: 'Archive B',
+          connectionType: 's3',
+          uploadRelativePath: ''
+        }
+      ]
+    })
+    repo.createFile(task.id, 'data.csv', 10, 1)
+    destinationRepo.ensureForTaskFiles(task.id)
+    destinationRepo.updateStatus(task.id, 'archive-a', 'completed')
+
+    const queue = new TaskQueueService()
+    queue.setTaskRunner(
+      async (_task, signal): Promise<TaskStatus> =>
+        new Promise((resolve) => {
+          signal.addEventListener('abort', () => resolve('paused'), {
+            once: true
+          })
+        })
+    )
+
+    queue.startUploading({ scope: 'selected', taskIds: [task.id] })
+    await flushAsyncWork()
+    assert.deepEqual(queue.getStatus().runningTaskIds, [task.id])
+
+    const status = queue.shutdown()
+    await flushAsyncWork()
+
+    assert.equal(status.gateOpen, false)
+    assert.deepEqual(queue.getStatus().runningTaskIds, [])
+    assert.equal(repo.getById(task.id)?.status, 'paused')
+    assert.deepEqual(
+      destinationRepo.listByTask(task.id).map((destination) => ({
+        connectionId: destination.connectionId,
+        status: destination.status
+      })),
+      [
+        { connectionId: 'archive-a', status: 'completed' },
+        { connectionId: 'archive-b', status: 'paused' }
+      ]
+    )
+  } finally {
+    closeTestDb(db)
+  }
+})

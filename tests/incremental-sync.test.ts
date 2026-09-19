@@ -2,11 +2,26 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import Database from 'better-sqlite3'
 import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { DEFAULT_SETTINGS } from '../src/shared/constants'
+import {
   runMigrations,
   setDbForTests
 } from '../src/main/db/database'
+import { SettingsRepo } from '../src/main/db/settings.repo'
 import { TaskRepo } from '../src/main/db/task.repo'
 import { TaskDestinationRepo } from '../src/main/db/task-destination.repo'
+import { CloudUploadService } from '../src/main/services/cloud-upload.service'
+import { TaskRunnerService } from '../src/main/services/task-runner.service'
+import type { CloudConnection, UploadRule } from '../src/shared/types'
 
 function createDatabase(): Database.Database {
   const db = new Database(':memory:')
@@ -30,6 +45,41 @@ function insertLegacyUploadGroup(db: Database.Database, id: string): void {
     now,
     now
   )
+}
+
+function s3Connection(id: string): CloudConnection {
+  return {
+    id,
+    name: id,
+    type: 's3',
+    config: {
+      endpoint: 'http://localhost:9000',
+      bucket: id,
+      region: 'us-east-1',
+      prefix: '',
+      accessKeyId: '',
+      accessKeySecret: '',
+      forcePathStyle: true,
+      allowInsecureTls: true
+    }
+  }
+}
+
+function uploadRule(id: string, root: string, connectionId: string): UploadRule {
+  return {
+    ...(DEFAULT_SETTINGS.rules[0] as UploadRule),
+    id,
+    name: id,
+    source: { roots: [root] },
+    destinations: [{ connectionId }],
+    pathMapping: { mode: 'keep-relative' },
+    filter: {
+      whitelist: [],
+      blacklist: [],
+      regex: [],
+      suffixes: ['.jpg']
+    }
+  }
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -273,4 +323,85 @@ test('retrying one cloud preserves an already synced destination', () => {
 
   setDbForTests(null)
   db.close()
+})
+
+test('runner requeues a file changed during upload and later uploads the stable version', async () => {
+  const db = createDatabase()
+  const root = mkdtempSync(join(tmpdir(), 'mutation-upload-'))
+  const originalCreateUploader = CloudUploadService.prototype.createTaskUploader
+  const originalValidate = CloudUploadService.prototype.validateConnection
+  try {
+    const filePath = join(root, 'a.jpg')
+    mkdirSync(root, { recursive: true })
+    writeFileSync(filePath, 'version-a')
+    utimesSync(filePath, new Date(1000), new Date(1000))
+
+    const connection = s3Connection('archive-a')
+    const rule = uploadRule('rule-mutation', root, connection.id)
+    new SettingsRepo().saveAll({
+      connections: [connection],
+      upload: {
+        ...DEFAULT_SETTINGS.upload,
+        maxFilesPerTask: 1,
+        maxConcurrentUploads: 1
+      }
+    })
+    const task = new TaskRepo().create({
+      folderPath: root,
+      folderName: 'mutation-upload',
+      sourceType: 'manual',
+      destinations: [
+        {
+          connectionId: connection.id,
+          connectionName: connection.name,
+          connectionType: connection.type,
+          prefix: 'archive',
+          uploadRelativePath: ''
+        }
+      ],
+      ruleId: rule.id,
+      ruleName: rule.name,
+      ruleSnapshot: rule
+    })
+
+    const uploaded: string[] = []
+    let mutated = false
+    CloudUploadService.prototype.validateConnection = () => null
+    CloudUploadService.prototype.createTaskUploader = async () => ({
+      provider: 'tencent',
+      uploadFile: async (path, objectKey) => {
+        uploaded.push(`${objectKey}:${readFileSync(path, 'utf8')}`)
+        if (!mutated) {
+          mutated = true
+          writeFileSync(path, 'version-b')
+          utimesSync(path, new Date(2000), new Date(2000))
+        }
+        return { objectKey }
+      },
+      uploadBuffer: async (_buffer, objectKey) => objectKey,
+      abort: () => {},
+      dispose: () => {}
+    })
+
+    assert.equal(await new TaskRunnerService().run(task), 'retrying')
+    assert.deepEqual(uploaded, ['archive/a.jpg:version-a'])
+    assert.equal(new TaskRepo().getById(task.id)?.status, 'pending')
+    assert.equal(new TaskDestinationRepo().listFileTargets(task.id)[0].status, 'pending')
+
+    assert.equal(
+      await new TaskRunnerService().run(new TaskRepo().getById(task.id)!),
+      'completed'
+    )
+    assert.deepEqual(uploaded, [
+      'archive/a.jpg:version-a',
+      'archive/a.jpg:version-b'
+    ])
+    assert.equal(new TaskDestinationRepo().listFileTargets(task.id)[0].status, 'completed')
+  } finally {
+    CloudUploadService.prototype.createTaskUploader = originalCreateUploader
+    CloudUploadService.prototype.validateConnection = originalValidate
+    rmSync(root, { recursive: true, force: true })
+    setDbForTests(null)
+    db.close()
+  }
 })

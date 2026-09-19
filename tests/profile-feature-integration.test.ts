@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import Database from 'better-sqlite3'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { DEFAULT_SETTINGS } from '../src/shared/constants'
 import { shouldRestartScannerAfterSettingsSave } from '../src/shared/settings-effects'
 import type { AppSettings, CloudConnection, UploadRule } from '../src/shared/types'
@@ -10,8 +13,10 @@ import {
 } from '../src/main/db/database'
 import { SettingsRepo } from '../src/main/db/settings.repo'
 import { TaskRepo } from '../src/main/db/task.repo'
+import { CloudUploadService } from '../src/main/services/cloud-upload.service'
 import { CloudConnectionStore } from '../src/main/services/cloud-connection-store.service'
 import { CredentialStore } from '../src/main/services/credential-store.service'
+import { TaskRunnerService } from '../src/main/services/task-runner.service'
 
 function createDatabase(): Database.Database {
   const db = new Database(':memory:')
@@ -210,6 +215,134 @@ test('manual tasks persist V3 rule snapshots and connection destinations', () =>
     )
     assert.equal('legacyProvider' in task.destinations[0], false)
   } finally {
+    closeDatabase(db)
+  }
+})
+
+test('created tasks keep their rule snapshot after the current rule changes', async () => {
+  const db = createDatabase()
+  const root = mkdtempSync(join(tmpdir(), 'snapshot-task-'))
+  const originalCreateUploader = CloudUploadService.prototype.createTaskUploader
+  const originalValidate = CloudUploadService.prototype.validateConnection
+  try {
+    const filePath = join(root, 'a.jpg')
+    writeFileSync(filePath, 'snapshot-data')
+    const connectionA = makeConnection({
+      id: 'archive-a',
+      name: 'Archive A',
+      config: { prefix: 'snap' }
+    })
+    const connectionB = makeConnection({
+      id: 'archive-b',
+      name: 'Archive B',
+      config: { prefix: 'new' }
+    })
+    const ruleV1 = makeRule(connectionA.id, {
+      id: 'rule-v1',
+      name: 'Rule V1',
+      source: { roots: [root] },
+      pathMapping: {
+        mode: 'template',
+        template: 'old/{relativePath}'
+      },
+      filter: {
+        whitelist: [],
+        blacklist: [],
+        regex: [],
+        suffixes: ['.jpg']
+      },
+      cleanup: {
+        enabled: true,
+        retentionDays: 30,
+        onlyAfterSealed: true
+      }
+    })
+    const ruleV2 = makeRule(connectionB.id, {
+      id: 'rule-v2',
+      name: 'Rule V2',
+      source: { roots: [root] },
+      pathMapping: {
+        mode: 'template',
+        template: 'new/{relativePath}'
+      },
+      filter: {
+        whitelist: [],
+        blacklist: [],
+        regex: [],
+        suffixes: ['.png']
+      },
+      cleanup: {
+        enabled: false,
+        retentionDays: 1,
+        onlyAfterSealed: true
+      }
+    })
+
+    new SettingsRepo().saveAll({
+      connections: [connectionA, connectionB],
+      rules: [ruleV1],
+      activeRuleId: ruleV1.id
+    })
+    const task = new TaskRepo().create({
+      folderPath: root,
+      folderName: 'snapshot-task',
+      sourceType: 'manual',
+      destinations: [
+        {
+          connectionId: connectionA.id,
+          connectionName: connectionA.name,
+          connectionType: connectionA.type,
+          prefix: 'snap',
+          uploadRelativePath: ''
+        }
+      ],
+      ruleId: ruleV1.id,
+      ruleName: ruleV1.name,
+      ruleSnapshot: ruleV1
+    })
+    new SettingsRepo().saveAll({
+      rules: [ruleV2],
+      activeRuleId: ruleV2.id
+    })
+
+    const uploads: Array<{
+      connectionId: string
+      objectKey: string
+      content: string
+    }> = []
+    CloudUploadService.prototype.validateConnection = () => null
+    CloudUploadService.prototype.createTaskUploader = async (connection) => ({
+      provider: 'aliyun',
+      uploadFile: async (path, objectKey) => {
+        uploads.push({
+          connectionId: connection.id,
+          objectKey,
+          content: readFileSync(path, 'utf8')
+        })
+        return { objectKey }
+      },
+      uploadBuffer: async (_buffer, objectKey) => objectKey,
+      abort: () => {},
+      dispose: () => {}
+    })
+
+    assert.equal(await new TaskRunnerService().run(task), 'completed')
+    assert.deepEqual(uploads, [
+      {
+        connectionId: 'archive-a',
+        objectKey: 'snap/old/a.jpg',
+        content: 'snapshot-data'
+      }
+    ])
+    assert.deepEqual(new TaskRepo().getById(task.id)?.ruleSnapshot?.cleanup, {
+      enabled: true,
+      retentionDays: 30,
+      onlyAfterSealed: true
+    })
+  } finally {
+    CloudUploadService.prototype.createTaskUploader = originalCreateUploader
+    CloudUploadService.prototype.validateConnection = originalValidate
+    rmSync(root, { recursive: true, force: true })
     closeDatabase(db)
   }
 })

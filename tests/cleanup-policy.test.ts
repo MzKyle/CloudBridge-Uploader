@@ -259,6 +259,48 @@ test('cleanup service deletes and marks only safe sealed upload groups', async (
   }
 })
 
+test('cleanup service aborts when new group content appears after cleanup claim', async () => {
+  const db = createDatabase()
+  const root = mkdtempSync(join(tmpdir(), 'cleanup-race-'))
+  try {
+    const fixture = createCleanupFixture(root)
+    const uploadGroupRepo = new UploadGroupRepo()
+    saveProfiles([
+      createProfile(
+        'profile-1',
+        root,
+        {
+          enabled: true,
+          retentionDays: 0,
+          onlyAfterSealed: true
+        }
+      )
+    ], {
+      enabled: true,
+      retentionDays: 0,
+      onlyAfterSealed: true
+    })
+    markFixtureSafeAndSealed(db, fixture)
+
+    const service = new CleanupService({
+      beforeGroupRemove: () => {
+        const lateTaskPath = join(fixture.groupPath, 'session-2')
+        mkdirSync(lateTaskPath, { recursive: true })
+        writeFileSync(join(lateTaskPath, 'late.bin'), 'late data')
+      }
+    })
+
+    await service.cleanup()
+
+    assert.equal(existsSync(fixture.groupPath), true)
+    assert.equal(existsSync(join(fixture.groupPath, 'session-2', 'late.bin')), true)
+    assert.equal(uploadGroupRepo.getById(fixture.groupId)?.uploadGroupStatus, 'sealed')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    closeDatabase(db)
+  }
+})
+
 test('cleanup service resolves independent cleanup policies per profile', async () => {
   const db = createDatabase()
   const root = mkdtempSync(join(tmpdir(), 'cleanup-profile-enabled-'))

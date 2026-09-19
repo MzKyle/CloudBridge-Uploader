@@ -307,6 +307,107 @@ test('startup reconciliation resumes existing sources and skips deleted sources'
   db.close()
 })
 
+test('startup reconciliation preserves completed destinations while recovering interrupted uploads', () => {
+  const db = createLegacyDatabase()
+  runMigrations(db)
+  const root = mkdtempSync(join(tmpdir(), 'uploader-reconcile-multi-'))
+  const taskPath = join(root, 'interrupted')
+  mkdirSync(taskPath)
+  const now = new Date().toISOString()
+  const completedAt = '2026-09-19T01:00:00.000Z'
+
+  db.prepare(`
+    INSERT INTO tasks (
+      id, folder_path, folder_name, status, oss_prefix, upload_target_mode,
+      upload_relative_path, source_type, created_at, updated_at
+    ) VALUES (
+      'interrupted-task', ?, 'interrupted', 'uploading', '', 'aliyun',
+      'batch/interrupted', 'local', ?, ?
+    )
+  `).run(taskPath, now, now)
+  db.prepare(`
+    INSERT INTO task_files (
+      id, task_id, relative_path, file_size, status, mtime_ms,
+      last_seen_at, source_status, stable_count, created_at, updated_at
+    ) VALUES (
+      'file-a', 'interrupted-task', 'camera/a.jpg', 10, 'uploading', 100,
+      ?, 'present', 2, ?, ?
+    )
+  `).run(now, now, now)
+  db.prepare(`
+    INSERT INTO task_destinations (
+      id, task_id, provider, connection_id, connection_name, status, prefix,
+      created_at, updated_at, completed_at
+    ) VALUES
+      ('destination-a', 'interrupted-task', 'aliyun', 'archive-a', 'Archive A',
+        'completed', 'a', ?, ?, ?),
+      ('destination-b', 'interrupted-task', 'tencent', 'archive-b', 'Archive B',
+        'uploading', 'b', ?, ?, NULL)
+  `).run(now, now, completedAt, now, now)
+  db.prepare(`
+    INSERT INTO task_file_destinations (
+      id, task_file_id, task_destination_id, provider, connection_id, status,
+      object_key, upload_id, created_at, updated_at
+    ) VALUES
+      ('file-destination-a', 'file-a', 'destination-a', 'aliyun', 'archive-a',
+        'completed', 'a/camera/a.jpg', 'upload-a', ?, ?),
+      ('file-destination-b', 'file-a', 'destination-b', 'tencent', 'archive-b',
+        'uploading', NULL, NULL, ?, ?)
+  `).run(now, now, now, now)
+
+  reconcileStartupState(db)
+  reconcileStartupState(db)
+
+  assert.deepEqual(
+    db.prepare('SELECT id, status FROM tasks').all(),
+    [{ id: 'interrupted-task', status: 'pending' }]
+  )
+  assert.deepEqual(
+    db.prepare(`
+      SELECT connection_id AS connectionId, status, completed_at AS completedAt
+      FROM task_destinations
+      ORDER BY connection_id
+    `).all(),
+    [
+      {
+        connectionId: 'archive-a',
+        status: 'completed',
+        completedAt
+      },
+      {
+        connectionId: 'archive-b',
+        status: 'pending',
+        completedAt: null
+      }
+    ]
+  )
+  assert.deepEqual(
+    db.prepare(`
+      SELECT connection_id AS connectionId, status, object_key AS objectKey,
+        upload_id AS uploadId
+      FROM task_file_destinations
+      ORDER BY connection_id
+    `).all(),
+    [
+      {
+        connectionId: 'archive-a',
+        status: 'completed',
+        objectKey: 'a/camera/a.jpg',
+        uploadId: 'upload-a'
+      },
+      {
+        connectionId: 'archive-b',
+        status: 'pending',
+        objectKey: null,
+        uploadId: null
+      }
+    ]
+  )
+
+  rmSync(root, { recursive: true, force: true })
+  db.close()
+})
+
 test('migration removes legacy duplicate file rows before adding unique index', () => {
   const db = createLegacyDatabase()
   const now = new Date().toISOString()
