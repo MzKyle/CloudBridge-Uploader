@@ -21,6 +21,7 @@ asar: true
 asarUnpack:
   - node_modules/better-sqlite3/**/*
 linux:
+  artifactName: CloudBridge-Uploader-${version}-linux-${arch}.${ext}
   maintainer: MzKyle <MzKyle@users.noreply.github.com>
   target:
     - target: AppImage
@@ -30,6 +31,7 @@ linux:
   category: Utility
   icon: resources/icon.png
 win:
+  artifactName: CloudBridge-Uploader-${version}-windows-${arch}.${ext}
   target:
     - target: nsis
       arch: [x64]
