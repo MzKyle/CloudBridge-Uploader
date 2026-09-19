@@ -175,7 +175,12 @@ export class UploadGroupRepo {
       conditions.push('status = ?')
       params.push(query.status)
     } else if (query.includeCompleted === false) {
-      conditions.push("status NOT IN ('completed', 'completed_with_skips')")
+      const activeCondition = "status NOT IN ('completed', 'completed_with_skips')"
+      conditions.push(
+        query.includeIgnored
+          ? `(${activeCondition} OR ignored = 1)`
+          : activeCondition
+      )
     }
     if (query.connectionId) {
       conditions.push(
@@ -579,6 +584,21 @@ export class UploadGroupRepo {
        SET ignored = ?, updated_at = ?
        WHERE id = ?`
     ).run(ignored ? 1 : 0, new Date().toISOString(), id)
+  }
+
+  reopenIgnoredForRestore(id: string): void {
+    const now = new Date().toISOString()
+    getDb().prepare(
+      `UPDATE day_folders
+       SET ignored = 0,
+           status = 'collecting',
+           upload_group_status = 'open',
+           completed_at = NULL,
+           sealed_at = NULL,
+           cleanable_at = NULL,
+           updated_at = ?
+       WHERE id = ? AND ignored = 1`
+    ).run(now, id)
   }
 
   private getRecordById(id: string): UploadGroupRecord | null {

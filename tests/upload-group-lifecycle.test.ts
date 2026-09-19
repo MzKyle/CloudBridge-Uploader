@@ -122,6 +122,47 @@ test('refresh and recalculation do not update upload group content activity', ()
   }
 })
 
+test('dashboard active group query can include ignored groups for restore', () => {
+  const db = createDatabase()
+  const root = mkdtempSync(join(tmpdir(), 'group-ignored-restore-'))
+  try {
+    const { groupId, taskId } = createGroupWithTask(root, { mode: 'manual' })
+    const uploadGroupRepo = new UploadGroupRepo()
+    const taskRepo = new TaskRepo()
+
+    uploadGroupRepo.setIgnored(groupId, true)
+    taskRepo.skip(taskId, '用户忽略整个归档组')
+    const ignoredGroup = uploadGroupRepo.recalculate(groupId)
+
+    assert.equal(ignoredGroup?.status, 'completed_with_skips')
+    assert.equal(
+      uploadGroupRepo.list({ includeCompleted: false }).some((item) => item.id === groupId),
+      false
+    )
+    assert.equal(
+      uploadGroupRepo
+        .list({ includeCompleted: false, includeIgnored: true })
+        .some((item) => item.id === groupId && item.ignored),
+      true
+    )
+
+    uploadGroupRepo.reopenIgnoredForRestore(groupId)
+    taskRepo.restore(taskId)
+    const restoredGroup = uploadGroupRepo.recalculate(groupId)
+
+    assert.equal(restoredGroup?.ignored, false)
+    assert.equal(restoredGroup?.status, 'processing')
+    assert.equal(restoredGroup?.uploadGroupStatus, 'open')
+    assert.equal(
+      uploadGroupRepo.list({ includeCompleted: false }).some((item) => item.id === groupId),
+      true
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    closeDatabase(db)
+  }
+})
+
 test('new tasks and file content changes update upload group content activity', () => {
   const db = createDatabase()
   const root = mkdtempSync(join(tmpdir(), 'group-activity-content-'))

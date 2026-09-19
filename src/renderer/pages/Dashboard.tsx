@@ -116,6 +116,15 @@ export default function Dashboard() {
 
   const selectedConnectionQuery =
     selectedConnectionId === "all" ? undefined : selectedConnectionId;
+  const dashboardUploadGroupQuery = useMemo(
+    () => ({
+      limit: 30,
+      connectionId: selectedConnectionQuery,
+      includeCompleted: false,
+      includeIgnored: true,
+    }),
+    [selectedConnectionQuery],
+  );
   const selectedConnectionName =
     selectedConnectionId === "all"
       ? "全部连接"
@@ -141,11 +150,7 @@ export default function Dashboard() {
   useEffect(() => {
     if (!settingsReady) return;
     loadTasks();
-    fetchUploadGroups({
-      limit: 30,
-      connectionId: selectedConnectionQuery,
-      includeCompleted: false,
-    })
+    fetchUploadGroups(dashboardUploadGroupQuery)
       .then(setUploadGroups)
       .catch(() => {});
     fetchUploadQueueStatus()
@@ -157,17 +162,13 @@ export default function Dashboard() {
     const off = window.api.on(
       IPC.UPLOAD_GROUP_EVENT,
       () => {
-        fetchUploadGroups({
-          limit: 30,
-          connectionId: selectedConnectionQuery,
-          includeCompleted: false,
-        })
+        fetchUploadGroups(dashboardUploadGroupQuery)
           .then(setUploadGroups)
           .catch(() => {});
       }
     );
     return () => off();
-  }, [selectedConnectionQuery]);
+  }, [dashboardUploadGroupQuery]);
 
   useEffect(() => {
     const off = window.api.on(
@@ -228,36 +229,24 @@ export default function Dashboard() {
     await triggerScan();
     await Promise.all([
       loadTasks(),
-      fetchUploadGroups({
-        limit: 30,
-        connectionId: selectedConnectionQuery,
-        includeCompleted: false,
-      }).then(setUploadGroups),
+      fetchUploadGroups(dashboardUploadGroupQuery).then(setUploadGroups),
     ]);
-  }, [loadTasks, selectedConnectionQuery]);
+  }, [dashboardUploadGroupQuery, loadTasks]);
 
   const handleRefresh = useCallback(async () => {
     await Promise.all([
       loadTasks(),
-      fetchUploadGroups({
-        limit: 30,
-        connectionId: selectedConnectionQuery,
-        includeCompleted: false,
-      }).then(setUploadGroups),
+      fetchUploadGroups(dashboardUploadGroupQuery).then(setUploadGroups),
     ]);
-  }, [loadTasks, selectedConnectionQuery]);
+  }, [dashboardUploadGroupQuery, loadTasks]);
 
   const refreshDashboard = useCallback(async () => {
     await Promise.all([
       loadTasks(),
-      fetchUploadGroups({
-        limit: 30,
-        connectionId: selectedConnectionQuery,
-        includeCompleted: false,
-      }).then(setUploadGroups),
+      fetchUploadGroups(dashboardUploadGroupQuery).then(setUploadGroups),
       fetchUploadQueueStatus().then(setUploadQueueStatus),
     ]);
-  }, [loadTasks, selectedConnectionQuery]);
+  }, [dashboardUploadGroupQuery, loadTasks]);
 
   const handlePause = useCallback(async (taskId: string) => {
     try {
@@ -305,13 +294,9 @@ export default function Dashboard() {
     await ignoreUploadGroup(id);
     await Promise.all([
       loadTasks(),
-      fetchUploadGroups({
-        limit: 30,
-        connectionId: selectedConnectionQuery,
-        includeCompleted: false,
-      }).then(setUploadGroups),
+      fetchUploadGroups(dashboardUploadGroupQuery).then(setUploadGroups),
     ]);
-  }, [loadTasks, selectedConnectionQuery]);
+  }, [dashboardUploadGroupQuery, loadTasks]);
 
   const handleIgnoreUploadGroup = useCallback((id: string) => {
     setConfirmAction({ kind: "ignore-group", id });
@@ -321,13 +306,9 @@ export default function Dashboard() {
     await restoreUploadGroup(id);
     await Promise.all([
       loadTasks(),
-      fetchUploadGroups({
-        limit: 30,
-        connectionId: selectedConnectionQuery,
-        includeCompleted: false,
-      }).then(setUploadGroups),
+      fetchUploadGroups(dashboardUploadGroupQuery).then(setUploadGroups),
     ]);
-  }, [loadTasks, selectedConnectionQuery]);
+  }, [dashboardUploadGroupQuery, loadTasks]);
 
   const performCloseUploadGroup = useCallback(async (id: string) => {
     const summary = await closeUploadGroup(id);

@@ -375,6 +375,7 @@ export interface UploadGroupSummary {
 export interface UploadGroupListQuery {
   status?: UploadGroupProcessingStatus
   includeCompleted?: boolean
+  includeIgnored?: boolean
   limit?: number
   connectionId?: string
 }

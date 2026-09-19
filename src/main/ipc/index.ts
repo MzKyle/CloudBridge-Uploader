@@ -177,7 +177,7 @@ export function registerAllIpc(): void {
 
   ipcMain.handle(IPC.UPLOAD_GROUP_RESTORE, (_event, args: { id: string }) => {
     const repo = getUploadGroupRepo()
-    repo.setIgnored(args.id, false)
+    repo.reopenIgnoredForRestore(args.id)
     for (const task of repo.getChildTasks(args.id)) {
       if (task.status !== 'skipped' || !existsSync(task.folderPath)) continue
       getTaskRepo().restore(task.id)

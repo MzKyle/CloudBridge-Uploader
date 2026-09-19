@@ -7,7 +7,7 @@ files:
   - out/**/*
   - package.json
   - '!**/*.map'
-  - '!**/src/**'
+  - '!src/**'
   - '!**/test/**'
   - '!**/tests/**'
   - '!**/docs/**'
