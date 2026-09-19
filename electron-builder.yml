@@ -21,6 +21,7 @@ asar: true
 asarUnpack:
   - node_modules/better-sqlite3/**/*
 linux:
+  maintainer: MzKyle <MzKyle@users.noreply.github.com>
   target:
     - target: AppImage
       arch: [x64]

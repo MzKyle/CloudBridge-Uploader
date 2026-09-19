@@ -1,6 +1,6 @@
 {
   "name": "cloudbridge-uploader",
-  "version": "3.0.0",
+  "version": "3.0.0-rc.1",
   "description": "CloudBridge Uploader: rule-driven multi-cloud upload bridge",
   "author": {
     "name": "MzKyle"
