@@ -1,6 +1,6 @@
 import { readdirSync, statSync } from 'fs'
 import { readdir, stat } from 'fs/promises'
-import { join, extname, basename } from 'path'
+import { join, extname, basename, sep } from 'path'
 import type { FilterRules } from '@shared/types'
 
 interface PatternMatcher {
@@ -143,7 +143,7 @@ export class FileFilterService {
         if (entry.name.startsWith('.')) continue
         this.walkDir(basePath, fullPath, results)
       } else if (entry.isFile()) {
-        const relativePath = fullPath.slice(basePath.length + 1)
+        const relativePath = this.toRelativePath(basePath, fullPath)
         // 跳过标记文件
         if (MARKER_FILE_NAMES.has(entry.name)) continue
         if (this.shouldInclude(relativePath)) {
@@ -179,7 +179,7 @@ export class FileFilterService {
           batchSize
         )
       } else if (entry.isFile()) {
-        const relativePath = fullPath.slice(basePath.length + 1)
+        const relativePath = this.toRelativePath(basePath, fullPath)
         if (MARKER_FILE_NAMES.has(entry.name)) continue
         if (!this.shouldInclude(relativePath)) continue
 
@@ -224,6 +224,11 @@ export class FileFilterService {
       // 文件可能在异步扫描期间被删除。
       return null
     }
+  }
+
+  private toRelativePath(basePath: string, fullPath: string): string {
+    const relativePath = fullPath.slice(basePath.length + 1)
+    return sep === '/' ? relativePath : relativePath.split(sep).join('/')
   }
 
   private compileRules(): void {
