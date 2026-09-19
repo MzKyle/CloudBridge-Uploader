@@ -5,6 +5,7 @@
   - [环境依赖](guide/prerequisites.md)
   - [开发运行](guide/run-app.md)
   - [安装与打包](guide/package-install.md)
+  - [发布流程](releasing.md)
 
 - **系统架构**
   - [架构总览](architecture/README.md)
