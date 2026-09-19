@@ -61,6 +61,22 @@ export class TaskQueueService extends EventEmitter {
     log.info('任务队列已停止')
   }
 
+  shutdown(): UploadQueueStatus {
+    this.uploadGateOpen = false
+    this.priorityTaskIds.clear()
+    this.priorityActive = false
+    this.priorityOverrideWindow = false
+
+    for (const taskId of Array.from(this.runningTasks.keys())) {
+      this.pauseRunningTask(taskId)
+    }
+
+    this.stop()
+    this.emitQueueStatus()
+    log.info('上传队列已关闭，运行中任务已标记为可恢复暂停状态')
+    return this.getStatus()
+  }
+
   getStatus(): UploadQueueStatus {
     const uploadConfig = getSettingsRepo().get<UploadConfig>('upload')
     this.syncPriorityState(false)

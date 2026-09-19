@@ -304,6 +304,18 @@ export class ScannerService {
       groupVariables,
       rule.id
     )
+    if (
+      uploadGroup.uploadGroupStatus === 'cleaned' ||
+      uploadGroup.uploadGroupStatus === 'cleanable'
+    ) {
+      return {
+        scanned: discoveredTasks.length,
+        newFound: 0,
+        existing: 0,
+        ignored: 0,
+        skipped: discoveredTasks.length
+      }
+    }
     const childNames = Array.from(
       new Set(discoveredTasks.map((task) => task.folderName))
     ).sort()

@@ -1,5 +1,6 @@
-import { existsSync } from 'fs'
+import { existsSync, readdirSync } from 'fs'
 import { rm } from 'fs/promises'
+import { basename, join } from 'path'
 import log from 'electron-log'
 import { getTaskRepo } from '../db/task.repo'
 import { getUploadGroupRepo } from '../db/upload-group.repo'
@@ -9,7 +10,17 @@ import { getUploadGroupService } from './upload-group.service'
 import { FileFilterService } from './file-filter.service'
 import { resolveCleanupPolicyForGroup } from './upload-group-policy'
 import { assertSafeCleanupPath } from '../utils/cleanup-path-safety'
-import type { CleanupConfig, Task } from '@shared/types'
+import type { CleanupConfig, Task, UploadGroupSummary } from '@shared/types'
+
+interface CleanupServiceHooks {
+  beforeGroupRemove?: (group: UploadGroupSummary) => void | Promise<void>
+}
+
+const MARKER_FILE_NAMES = new Set([
+  'tmp_upload.json',
+  'process_task.json',
+  'day_upload.json'
+])
 
 /**
  * 自动清理服务
@@ -21,6 +32,8 @@ export class CleanupService {
   private timer: ReturnType<typeof setInterval> | null = null
   private pendingRun: ReturnType<typeof setTimeout> | null = null
   private running = false
+
+  constructor(private readonly hooks: CleanupServiceHooks = {}) {}
 
   start(): void {
     if (this.timer) return
@@ -98,13 +111,51 @@ export class CleanupService {
           if (!uploadGroupRepo.isSafeToClean(latest.id)) {
             continue
           }
-          await assertSafeCleanupPath({
-            targetPath: latest.folderPath,
-            sourceRoots: resolved.sourceRoots
-          })
-          uploadGroupRepo.markCleanable(latest.id)
-          await rm(latest.folderPath, { recursive: true, force: true })
-          uploadGroupRepo.markCleaned(latest.id)
+          if (!uploadGroupRepo.claimCleanup(latest.id)) {
+            continue
+          }
+
+          let cleanupClaimActive = true
+          try {
+            const claimed = uploadGroupRepo.getById(latest.id)
+            if (
+              !claimed ||
+              !existsSync(claimed.folderPath) ||
+              claimed.uploadGroupStatus !== 'cleanable' ||
+              !this.retentionExpired(claimed.sealedAt || claimed.completedAt, groupRetentionDays)
+            ) {
+              uploadGroupRepo.releaseCleanupClaim(latest.id)
+              cleanupClaimActive = false
+              continue
+            }
+
+            await this.hooks.beforeGroupRemove?.(claimed)
+            await this.refreshGroupFiles(claimed.id)
+            const validated = uploadGroupRepo.recalculate(claimed.id)
+            if (
+              !validated ||
+              validated.uploadGroupStatus !== 'cleanable' ||
+              !this.retentionExpired(validated.sealedAt || validated.completedAt, groupRetentionDays) ||
+              !uploadGroupRepo.isSafeToClean(validated.id) ||
+              !this.hasOnlyDiscoveredGroupContent(validated.id, validated.folderPath)
+            ) {
+              uploadGroupRepo.releaseCleanupClaim(latest.id)
+              cleanupClaimActive = false
+              continue
+            }
+
+            await assertSafeCleanupPath({
+              targetPath: validated.folderPath,
+              sourceRoots: resolved.sourceRoots
+            })
+            await rm(validated.folderPath, { recursive: true, force: true })
+            uploadGroupRepo.markCleaned(validated.id)
+            cleanupClaimActive = false
+          } finally {
+            if (cleanupClaimActive) {
+              uploadGroupRepo.releaseCleanupClaim(latest.id)
+            }
+          }
           cleaned++
           log.info(
             `自动清理: 已删除归档组 ${latest.folderPath} ` +
@@ -161,6 +212,70 @@ export class CleanupService {
 
   private isSealedCleanupCandidate(group: { uploadGroupStatus: string }): boolean {
     return group.uploadGroupStatus === 'sealed' || group.uploadGroupStatus === 'cleanable'
+  }
+
+  private hasOnlyDiscoveredGroupContent(
+    uploadGroupId: string,
+    groupPath: string
+  ): boolean {
+    const groupName = basename(groupPath)
+    const expectedRoots = getUploadGroupRepo()
+      .listChildFolderNames(uploadGroupId)
+      .map((name) => this.normalizeRelativePath(name === groupName ? '' : name))
+
+    const stack = ['']
+    while (stack.length > 0) {
+      const current = stack.pop()!
+      const absolute = current ? join(groupPath, current) : groupPath
+      let entries
+      try {
+        entries = readdirSync(absolute, { withFileTypes: true })
+      } catch {
+        return false
+      }
+
+      for (const entry of entries) {
+        const relativePath = this.normalizeRelativePath(
+          current ? join(current, entry.name) : entry.name
+        )
+        if (entry.isDirectory()) {
+          if (!this.isExpectedGroupPath(relativePath, expectedRoots, true)) {
+            return false
+          }
+          stack.push(relativePath)
+          continue
+        }
+        if (entry.isFile() && MARKER_FILE_NAMES.has(entry.name)) {
+          continue
+        }
+        if (!this.isExpectedGroupPath(relativePath, expectedRoots, false)) {
+          return false
+        }
+      }
+    }
+
+    return true
+  }
+
+  private isExpectedGroupPath(
+    relativePath: string,
+    expectedRoots: string[],
+    isDirectory: boolean
+  ): boolean {
+    for (const root of expectedRoots) {
+      if (!root) return true
+      if (relativePath === root || relativePath.startsWith(`${root}/`)) {
+        return true
+      }
+      if (isDirectory && root.startsWith(`${relativePath}/`)) {
+        return true
+      }
+    }
+    return false
+  }
+
+  private normalizeRelativePath(value: string): string {
+    return value.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
   }
 
   private async refreshGroupFiles(uploadGroupId: string): Promise<void> {

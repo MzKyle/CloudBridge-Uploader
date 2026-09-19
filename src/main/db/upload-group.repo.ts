@@ -120,6 +120,12 @@ export class UploadGroupRepo {
   ): UploadGroupSummary {
     const existing = this.getRecordByPath(folderPath)
     if (existing) {
+      if (
+        existing.uploadGroupStatus === 'cleanable' ||
+        existing.uploadGroupStatus === 'cleaned'
+      ) {
+        return this.toSummary(existing)
+      }
       this.updateGroupMetadata(existing.id, groupKey, variables, ruleId ?? existing.ruleId)
       return this.getById(existing.id) || existing
     }
@@ -249,6 +255,53 @@ export class UploadGroupRepo {
 
   markCleaned(id: string): void {
     this.transitionStatus(id, 'cleaned')
+  }
+
+  claimCleanup(id: string): boolean {
+    const now = new Date().toISOString()
+    const result = getDb().prepare(
+      `UPDATE day_folders
+       SET upload_group_status = 'cleanable',
+           cleanable_at = COALESCE(cleanable_at, ?),
+           updated_at = ?
+       WHERE id = ?
+         AND upload_group_status IN ('sealed', 'cleanable')
+         AND NOT EXISTS (
+           SELECT 1
+           FROM tasks
+           WHERE day_folder_id = ?
+             AND status IN ('pending', 'scanning', 'uploading', 'retrying', 'failed', 'paused')
+         )
+         AND NOT EXISTS (
+           SELECT 1
+           FROM task_destinations
+           WHERE task_id IN (SELECT id FROM tasks WHERE day_folder_id = ?)
+             AND status NOT IN ('completed', 'synced', 'skipped')
+         )
+         AND NOT EXISTS (
+           SELECT 1
+           FROM task_files
+           WHERE task_id IN (SELECT id FROM tasks WHERE day_folder_id = ?)
+             AND source_status = 'present'
+             AND status NOT IN ('completed', 'skipped')
+         )`
+    ).run(now, now, id, id, id, id)
+    return result.changes === 1
+  }
+
+  releaseCleanupClaim(id: string): void {
+    const now = new Date().toISOString()
+    getDb().prepare(
+      `UPDATE day_folders
+       SET upload_group_status = 'sealed',
+           cleanable_at = NULL,
+           updated_at = ?
+       WHERE id = ? AND upload_group_status = 'cleanable'`
+    ).run(now, id)
+  }
+
+  listChildFolderNames(id: string): string[] {
+    return this.getRecordById(id)?.childFolders || []
   }
 
   markContentActivity(id: string, occurredAt = new Date().toISOString()): void {

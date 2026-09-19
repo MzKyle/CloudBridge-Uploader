@@ -301,7 +301,7 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   getScannerService().stop()
-  getTaskQueueService().stop()
+  getTaskQueueService().shutdown()
   getCleanupService().stop()
 })
 
