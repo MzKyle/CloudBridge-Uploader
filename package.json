@@ -22,9 +22,9 @@
     "posttest": "npm run rebuild:electron",
     "lint": "eslint .",
     "validate:release-tag": "node scripts/validate-release-tag.mjs",
-    "build:linux": "electron-vite build && rm -rf node_modules/cpu-features && npm run rebuild:electron && electron-builder --linux --x64 && npm run rebuild:node",
-    "build:win": "electron-vite build && electron-builder --win --x64 && npm run rebuild:electron",
-    "build:all": "electron-vite build && electron-builder --linux --win --x64 && npm run rebuild:electron",
+    "build:linux": "electron-vite build && rm -rf node_modules/cpu-features && npm run rebuild:electron && electron-builder --linux --x64 --publish never && npm run rebuild:node",
+    "build:win": "electron-vite build && electron-builder --win --x64 --publish never && npm run rebuild:electron",
+    "build:all": "electron-vite build && electron-builder --linux --win --x64 --publish never && npm run rebuild:electron",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {

@@ -33,6 +33,13 @@ test('release workflow builds native platform packages', () => {
   assert.doesNotMatch(workflow, /npm run build\n/)
 })
 
+test('release packaging scripts leave publishing to the release job', () => {
+  const packageJson = JSON.parse(readFileSync('package.json', 'utf8'))
+
+  assert.match(packageJson.scripts['build:win'], /electron-builder --win --x64 --publish never/)
+  assert.match(packageJson.scripts['build:linux'], /electron-builder --linux --x64 --publish never/)
+})
+
 test('release tag validation accepts the package version tag', () => {
   const packageJson = JSON.parse(readFileSync('package.json', 'utf8'))
   const result = spawnSync(process.execPath, ['scripts/validate-release-tag.mjs', `v${packageJson.version}`], {
