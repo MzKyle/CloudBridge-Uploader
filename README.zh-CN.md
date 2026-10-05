@@ -4,7 +4,7 @@
 
 Windows x64：**[一键下载 3.0.0-rc.6 安装包](https://github.com/MzKyle/CloudBridge-Uploader/releases/download/v3.0.0-rc.6/CloudBridge-Uploader-3.0.0-rc.6-windows-x64.exe)** · [发布说明与其他平台](https://github.com/MzKyle/CloudBridge-Uploader/releases/tag/v3.0.0-rc.6)
 
-此候选版已完成 Windows 验收。GitHub 的 `Latest` 入口仍指向正式版 v2.3.0。
+此版本已完成 Windows 验收，并已标记为 GitHub `Latest`。
 
 ![云桥上传器](docs/assets/cover.svg)
 

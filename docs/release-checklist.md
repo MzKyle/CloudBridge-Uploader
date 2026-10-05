@@ -50,6 +50,7 @@ Windows evidence: [2026-10-05 acceptance](windows-acceptance.md).
 - [x] SHA256SUMS excludes itself and includes release assets only
 - [x] `better-sqlite3` remains unpacked from `app.asar`
 - [x] RC GitHub pre-release created by tag workflow (`v3.0.0-rc.6`)
+- [x] `v3.0.0-rc.6` subsequently marked as GitHub Latest; package version unchanged
 - [x] published Windows installer SHA256, install, smoke and uninstall verified
 - [ ] Final Release Acceptance PASS
 - [ ] Stable `v3.0.0` promotion
