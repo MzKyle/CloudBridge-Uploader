@@ -2,6 +2,10 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+Windows x64: **[Download the 3.0.0-rc.6 installer](https://github.com/MzKyle/CloudBridge-Uploader/releases/download/v3.0.0-rc.6/CloudBridge-Uploader-3.0.0-rc.6-windows-x64.exe)** · [Release notes and other platforms](https://github.com/MzKyle/CloudBridge-Uploader/releases/tag/v3.0.0-rc.6)
+
+This candidate has passed Windows acceptance. GitHub's `Latest` entry still points to the stable v2.3.0 release.
+
 ![CloudBridge Uploader](docs/assets/cover.svg)
 
 CloudBridge Uploader is a rule-driven desktop uploader for reliably discovering,
