@@ -81,7 +81,7 @@ npm run build:linux
 npm run build:win
 ```
 
-构建产物输出到 `dist/`。当前候选版本为 `3.0.0-rc.4`。
+构建产物输出到 `dist/`。当前候选版本为 `3.0.0-rc.6`。
 
 ## 打包目标
 

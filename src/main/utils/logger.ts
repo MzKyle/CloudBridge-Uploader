@@ -17,6 +17,10 @@ let levelFileHookInstalled = false
 const LEVEL_LOG_MAX_SIZE = 10 * 1024 * 1024
 const LEVEL_LOG_DISCARD_SIZE = 50 * 1024 * 1024
 
+export function getLogDirectory(): string {
+  return logDir || join(app.getPath('userData'), 'logs')
+}
+
 /**
  * 初始化日志系统
  * - 按天分目录: {logDir}/YYYY-MM-DD/

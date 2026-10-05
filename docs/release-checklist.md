@@ -1,6 +1,7 @@
 # Release Checklist
 
-Use this checklist for `3.0.0-rc.5` soak testing and the later `3.0.0` decision.
+Use this checklist for `3.0.0-rc.6` soak testing and the later `3.0.0` decision.
+Windows evidence: [2026-10-05 acceptance](windows-acceptance.md).
 
 ## Code Gate
 
@@ -12,24 +13,26 @@ Use this checklist for `3.0.0-rc.5` soak testing and the later `3.0.0` decision.
 ## Packaging
 
 - [x] Windows native package via release workflow
-- [ ] Windows installer install
-- [ ] Windows app launch
+- [x] Windows installer install (native NSIS, Chinese/space installation path)
+- [x] Windows app launch (installed executable, isolated profile)
+- [x] Windows installer uninstall
 - [x] Linux native package assets generated
 - [ ] Linux app launch
-  - NOT EXECUTED — no Linux GUI final install smoke in this environment
+  - Prior Linux acceptance was reported by the user; not repeated on this Windows host.
 
 ## Product Smoke
 
-- [ ] create S3-compatible connection
-- [ ] create Aliyun OSS connection
-- [ ] create UploadRule
-- [ ] multi-root Dry Run
-- [ ] upload sample data
-- [ ] restart recovery
-- [ ] retry failed destination
-- [ ] edit Rule after task created
-- [ ] seal UploadGroup
-- [ ] cleanup safety
+- [x] create S3-compatible connection
+- [x] create Aliyun OSS connection (configuration only)
+- [x] create UploadRule
+- [x] multi-root Dry Run
+- [x] upload sample data (local S3 protocol fixture, including multipart)
+- [x] restart recovery (including abrupt exit during upload)
+- [x] retry failed destination
+- [x] edit Rule after task created
+- [x] seal UploadGroup
+- [x] cleanup safety (automated policy, traversal and junction checks)
+- [ ] live S3/OSS upload with production endpoint credentials
 
 ## Release Hygiene
 

@@ -1,6 +1,7 @@
 import { existsSync } from 'fs'
 import { access } from 'fs/promises'
 import { join } from 'path'
+import { isPathWithinFolder } from '../utils/local-path'
 import { watch, type FSWatcher } from 'chokidar'
 import { BrowserWindow } from 'electron'
 import log from 'electron-log'
@@ -628,19 +629,11 @@ export class ScannerService {
     seenChildPaths: Set<string>,
     watchedDirectories: string[]
   ): Promise<void> {
-    const normalizedRoots = watchedDirectories.map((directory) =>
-      directory.replace(/[\\/]+$/, '')
-    )
     const tasks = getTaskRepo().listMonitorableLocalUnfinishedTasks()
     for (let index = 0; index < tasks.length; index++) {
       const task = tasks[index]
       if (
-        !normalizedRoots.some(
-          (root) =>
-            task.folderPath === root ||
-            task.folderPath.startsWith(`${root}/`) ||
-            task.folderPath.startsWith(`${root}\\`)
-        )
+        !watchedDirectories.some((root) => isPathWithinFolder(task.folderPath, root))
       ) {
         continue
       }

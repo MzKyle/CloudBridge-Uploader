@@ -1,6 +1,6 @@
 {
   "name": "cloudbridge-uploader",
-  "version": "3.0.0-rc.5",
+  "version": "3.0.0-rc.6",
   "description": "CloudBridge Uploader: rule-driven multi-cloud upload bridge",
   "author": {
     "name": "MzKyle"
@@ -24,6 +24,7 @@
     "validate:release-tag": "node scripts/validate-release-tag.mjs",
     "build:linux": "electron-vite build && rm -rf node_modules/cpu-features && npm run rebuild:electron && electron-builder --linux --x64 --publish never && npm run rebuild:node",
     "build:win": "electron-vite build && electron-builder --win --x64 --publish never && npm run rebuild:electron",
+    "smoke:win": "node scripts/windows-smoke.mjs",
     "build:all": "electron-vite build && electron-builder --linux --win --x64 --publish never && npm run rebuild:electron",
     "postinstall": "electron-builder install-app-deps"
   },
@@ -54,6 +55,7 @@
     "electron-vite": "^5.0.0",
     "eslint": "^9.17.0",
     "lucide-react": "^0.469.0",
+    "playwright": "^1.58.2",
     "postcss": "^8.4.49",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

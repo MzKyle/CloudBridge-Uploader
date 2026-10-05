@@ -407,7 +407,7 @@ test('cleanup path safety guard rejects roots, traversal, and external symlinks'
   const symlinkPath = join(root, 'external-link')
   try {
     mkdirSync(child)
-    symlinkSync(outside, symlinkPath, 'dir')
+    symlinkSync(outside, symlinkPath, process.platform === 'win32' ? 'junction' : 'dir')
 
     assert.equal(await isSafeCleanupPath({ targetPath: root, sourceRoots: [root] }), false)
     assert.equal(await isSafeCleanupPath({ targetPath: '/', sourceRoots: [root] }), false)

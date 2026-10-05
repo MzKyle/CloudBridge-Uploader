@@ -1,7 +1,8 @@
 import { BrowserWindow, dialog, ipcMain } from 'electron'
 import { existsSync } from 'fs'
 import { statfs } from 'fs/promises'
-import { basename, normalize } from 'path'
+import { basename } from 'path'
+import { normalizeFolderPath } from '../utils/local-path'
 import log from 'electron-log'
 import { IPC } from '@shared/ipc-channels'
 import type {
@@ -327,7 +328,7 @@ export function registerAllIpc(): void {
     const paths = new Set<string>()
     for (const rule of settings.rules) {
       for (const root of rule.source.roots) {
-        paths.add(normalize(root).replace(/[\\/]+$/, ''))
+        paths.add(normalizeFolderPath(root))
       }
     }
     const results: DiskUsageInfo[] = []

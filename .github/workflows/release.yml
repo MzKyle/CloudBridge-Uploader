@@ -81,6 +81,17 @@ jobs:
             throw "better-sqlite3 native module was not found under app.asar.unpacked"
           }
 
+      - name: Smoke test packaged Windows application
+        run: npm run smoke:win
+
+      - name: Upload Windows acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-acceptance
+          path: .acceptance/windows-*/
+          if-no-files-found: ignore
+
       - name: Upload Windows release asset
         uses: actions/upload-artifact@v4
         with:
@@ -164,10 +175,14 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v4
+
       - name: Download release assets
         uses: actions/download-artifact@v4
         with:
           path: release-assets
+          pattern: release-*
           merge-multiple: true
 
       - name: Collect and checksum release assets
@@ -209,6 +224,11 @@ jobs:
       - name: Write release notes
         shell: bash
         run: |
+          version="${{ needs.validate.outputs.version }}"
+          if [[ -f "docs/releases/${version}.md" ]]; then
+            cp "docs/releases/${version}.md" RELEASE_NOTES.md
+            exit 0
+          fi
           cat > RELEASE_NOTES.md <<'NOTES'
           CloudBridge Uploader
 

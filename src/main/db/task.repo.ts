@@ -1,6 +1,7 @@
 import { getDb } from './database'
 import { v4 as uuid } from 'uuid'
 import { normalize } from 'path'
+import { isPathWithinFolder, normalizeFolderPath } from '../utils/local-path'
 import type {
   TaskListQuery,
   Task,
@@ -16,10 +17,6 @@ import {
   getTaskDestinationRepo,
   type TaskDestinationCreateInput
 } from './task-destination.repo'
-
-function normalizeFolderPath(p: string): string {
-  return normalize(p).replace(/[\\/]+$/, '')
-}
 
 function rowToTask(
   row: Record<string, unknown>,
@@ -285,10 +282,7 @@ export class TaskRepo {
       .prepare('SELECT * FROM tasks ORDER BY length(folder_path) DESC')
       .all() as Record<string, unknown>[]
     const tasks = this.rowsToTasks(rows)
-    return tasks.find((t) => {
-      const fp = t.folderPath
-      return normalized.startsWith(fp + '/') || normalized.startsWith(fp + '\\')
-    }) || null
+    return tasks.find((task) => isPathWithinFolder(normalized, task.folderPath)) || null
   }
 
   create(params: {

@@ -1,4 +1,5 @@
-import { join, normalize } from 'path'
+import { join } from 'path'
+import { normalizeFolderPath } from '../utils/local-path'
 import { v4 as uuid } from 'uuid'
 import type {
   CompletionPolicy,
@@ -20,10 +21,6 @@ import { getSettingsRepo } from './settings.repo'
 
 interface UploadGroupRecord extends UploadGroupSummary {
   childFolders: string[]
-}
-
-function normalizeFolderPath(p: string): string {
-  return normalize(p).replace(/[\\/]+$/, '')
 }
 
 function safeParseVariables(

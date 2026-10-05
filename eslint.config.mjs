@@ -30,6 +30,8 @@ export default tseslint.config(
       'dist/**',
       'out/**',
       'node_modules/**',
+      '.tools/**',
+      '.acceptance/**',
       '.history/**',
       '__MACOSX/**',
       'coverage/**',

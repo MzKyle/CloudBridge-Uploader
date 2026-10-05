@@ -1,5 +1,5 @@
 import { readdir } from 'fs/promises'
-import { basename, join } from 'path'
+import { basename, join, relative } from 'path'
 import {
   discoveryPatternDepth,
   matchDiscoveryRule,
@@ -84,10 +84,10 @@ async function discoverTaskDirectories(
   if (!hasTaskRule(config)) {
     return [
       {
-        taskKey: normalizeDiscoveryPath(groupPath.slice(rootDir.length)) || basename(groupPath),
+        taskKey: normalizeDiscoveryPath(relative(rootDir, groupPath)) || basename(groupPath),
         folderName: basename(groupPath),
         folderPath: groupPath,
-        relativePath: normalizeDiscoveryPath(groupPath.slice(rootDir.length)),
+        relativePath: normalizeDiscoveryPath(relative(rootDir, groupPath)),
         variables: {},
         ignored: false
       }

@@ -8,7 +8,8 @@ import {
   nativeImage,
   dialog
 } from 'electron'
-import { join } from 'path'
+import { join, resolve } from 'path'
+import { mkdirSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { registerAllIpc } from './ipc'
 import { initDatabase } from './db/database'
@@ -18,7 +19,7 @@ import { getTaskQueueService } from './services/task-queue.service'
 import { getTaskRunnerService } from './services/task-runner.service'
 import { getCleanupService } from './services/cleanup.service'
 import { getTaskRepo } from './db/task.repo'
-import { initLogger } from './utils/logger'
+import { getLogDirectory, initLogger } from './utils/logger'
 import { IPC } from '@shared/ipc-channels'
 import type { LogConfig } from '@shared/types'
 import log from 'electron-log'
@@ -28,6 +29,13 @@ let startupWindow: BrowserWindow | null = null
 let ossPreviewWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let servicesStarted = false
+
+const userDataDirectory = app.commandLine.getSwitchValue('user-data-dir')
+if (userDataDirectory) {
+  const directory = resolve(userDataDirectory)
+  mkdirSync(directory, { recursive: true })
+  app.setPath('userData', directory)
+}
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
@@ -126,9 +134,12 @@ function createWindow(): void {
 }
 
 function createTray(): void {
-  // 使用一个简单的 16x16 图标（纯色方块作为占位）
-  const icon = nativeImage.createEmpty()
-  tray = new Tray(icon.isEmpty() ? nativeImage.createFromBuffer(Buffer.alloc(0)) : icon)
+  const resourcesDirectory = app.isPackaged
+    ? join(process.resourcesPath, 'resources')
+    : join(app.getAppPath(), 'resources')
+  const icon = nativeImage.createFromPath(join(resourcesDirectory, 'icon.png'))
+  if (icon.isEmpty()) throw new Error('无法加载托盘图标')
+  tray = new Tray(icon.resize({ width: 16, height: 16 }))
 
   const contextMenu = Menu.buildFromTemplate([
     {
@@ -223,7 +234,7 @@ function startServices(): void {
 
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return
-  electronApp.setAppUserModelId('com.uploader.app')
+  electronApp.setAppUserModelId('com.cloudbridge.uploader')
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
@@ -287,7 +298,7 @@ app.whenReady().then(async () => {
     '云桥上传器启动失败',
     message.includes('database is locked')
       ? '数据库正在被另一个程序进程使用。请结束旧的云桥上传器进程后重试。'
-      : `${message}\n\n请查看 ~/.config/electron-uploader/logs 下的日志。`
+      : `${message}\n\n请查看 ${getLogDirectory()} 下的日志。`
   )
   app.quit()
 })

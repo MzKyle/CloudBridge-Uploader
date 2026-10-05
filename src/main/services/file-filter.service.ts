@@ -1,6 +1,6 @@
 import { readdirSync, statSync } from 'fs'
 import { readdir, stat } from 'fs/promises'
-import { join, extname, basename, sep } from 'path'
+import { join, extname, basename, relative, sep } from 'path'
 import type { FilterRules } from '@shared/types'
 
 interface PatternMatcher {
@@ -227,7 +227,7 @@ export class FileFilterService {
   }
 
   private toRelativePath(basePath: string, fullPath: string): string {
-    const relativePath = fullPath.slice(basePath.length + 1)
+    const relativePath = relative(basePath, fullPath)
     return sep === '/' ? relativePath : relativePath.split(sep).join('/')
   }
 

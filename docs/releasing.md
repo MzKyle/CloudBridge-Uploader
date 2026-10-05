@@ -7,6 +7,8 @@ CloudBridge Uploader releases are created from version tags. The release workflo
 1. Merge release-ready work to `main`.
 2. Wait for CI on `main` to pass.
 3. Complete manual release acceptance.
+   On Windows, run `npm run build:win`, install the NSIS package, and run
+   `npm run smoke:win -- "C:\path\to\云桥上传器.exe"` against the installed application.
 4. Update `package.json`, `package-lock.json`, and release docs to the target version.
 5. Commit the version change.
 6. Wait for CI on `main` to pass again.
@@ -51,3 +53,8 @@ For `vX.Y.Z`, the workflow uploads:
 - `SHA256SUMS.txt`
 
 Windows installers are intentionally unsigned. Auto-update metadata is not part of the v3 release architecture; users update manually from GitHub Releases.
+
+The release workflow also runs `smoke:win` against the packaged Windows application
+before uploading the installer. Acceptance logs and screenshots are retained as a
+separate `windows-acceptance` workflow artifact. The smoke uses a local S3 protocol
+fixture; live cloud endpoint acceptance remains a separate check.
