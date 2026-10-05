@@ -90,6 +90,7 @@ jobs:
         with:
           name: windows-acceptance
           path: .acceptance/windows-*/
+          include-hidden-files: true
           if-no-files-found: ignore
 
       - name: Upload Windows release asset
