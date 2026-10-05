@@ -5,6 +5,23 @@ Date: 2026-10-05 (Asia/Shanghai). Version: `3.0.0-rc.6`.
 Windows platform acceptance: **PASS** for the checks below. Live cloud endpoint
 acceptance remains outstanding; this record does not promote the release to stable.
 
+## Published package verification
+
+The [rc.6 release](https://github.com/MzKyle/CloudBridge-Uploader/releases/tag/v3.0.0-rc.6)
+was published successfully. Windows and Linux CI passed, and the
+[release workflow](https://github.com/MzKyle/CloudBridge-Uploader/actions/runs/37277532964)
+passed all validation, packaging and Windows smoke gates.
+
+The publicly downloadable Windows installer was downloaded, checked against
+`SHA256SUMS.txt`, installed and subjected to all 11 smoke checks again: **PASS**.
+Silent uninstall also passed. Evidence: `.acceptance/windows-WZddRh/result.json`.
+
+Published installer SHA256:
+
+```text
+a0f2b814ce7546fa178be7e7cf757823bbefccc3b5e691b44d7823cc68804b5a
+```
+
 ## Environment and artifact
 
 - Microsoft Windows 11 Home China, build `10.0.26300`, x64.
